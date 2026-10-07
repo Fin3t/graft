@@ -113,7 +113,7 @@ test("Unity: components in scenes/prefabs attach their classes; prefabs nest and
   assert.equal(comp.kind, "component");
   assert.equal(comp.span, "L18-L26");
   // what it points at rides in the signature, so callers/ask show it without a second hop
-  assert.equal(comp.signature, 'Spawner on "Spawner" · walkerPrefab → Assets/Prefabs/Walker.prefab');
+  assert.equal(comp.signature, 'Spawner on "Spawner" · walkerPrefab → Assets/Prefabs/Walker.prefab "Walker"');
 });
 
 test("Unity: UnityEvent, AnimationEvent and SendMessage reach their methods", async () => {
@@ -217,6 +217,13 @@ test("Unity: grep reports engine entries; callers header says what a constant na
   assert.ok(has(g, "references", "Spawner.LevelScene", "Assets/Scenes/Level.unity"));
   const walker = g.nodes.find((n) => short(n.id) === "Walker")!;
   assert.match(headerOf(walker), /assembly Game \(Assets\/Scripts\/Game\.asmdef\)/);
+});
+
+test("Unity: Addressables addresses and AudioMixer exposed parameters", async () => {
+  const g = await graph();
+  assert.ok(has(g, "loads", "Spawner.Sound", "Assets/Prefabs/Walker.prefab"), `Addressables "Hero" → Walker.prefab\n${edgeList(g, "loads")}`);
+  assert.ok(has(g, "sets", "Spawner.Sound", "Exposed/MusicVolume"), edgeList(g, "sets"));
+  assert.ok(!has(g, "sets", "Spawner.Sound", "Parameters/Attack"), "a mixer parameter is not an Animator parameter");
 });
 
 test("Unity: graph invariants hold", async () => {

@@ -227,6 +227,8 @@ export function resolveUnity(
   const named = (kind: string, name: string): NodeV1[] => byKindName.get(`${kind}\0${name}`) ?? [];
   const shaderProps = (name: string): NodeV1[] => named("property", name).filter((n) => /\.(shader|shadergraph|shadersubgraph)$/i.test(n.path));
   const tagManager = [...assetFacts.entries()].find(([, a]) => a.layers)?.[1];
+  const addresses = new Map<string, string[]>(); // Addressables address → asset GUIDs
+  for (const a of assetFacts.values()) for (const x of a.addresses ?? []) addresses.set(x.address, [...(addresses.get(x.address) ?? []), x.guid]);
   const buildScenes = [...assetFacts.values()].find((a) => a.scenes)?.scenes ?? [];
   const scenesByName = new Map<string, string[]>();
   for (const id of fileNodes) if (id.toLowerCase().endsWith(".unity")) {
@@ -588,8 +590,19 @@ export function resolveUnity(
             if (t) add(e.source, t, "loads", "extracted", `Shader.Find(${via(v)})`);
           });
         return;
-      case "LoadScene":
       case "LoadSceneAsync":
+        if (recvShort === "Addressables") {
+          each(0, (v) => {
+            if (v.open) return;
+            for (const a of addresses.get(v.s) ?? []) {
+              const t = assetTarget(a);
+              if (t) add(e.source, t, "loads", "extracted", `Addressables.LoadSceneAsync(${via(v)})`);
+            }
+          });
+          return;
+        }
+      // falls through
+      case "LoadScene":
       case "GetSceneByName":
       case "UnloadSceneAsync":
       case "OpenScene":
@@ -618,6 +631,13 @@ export function resolveUnity(
       case "SetFloat":
       case "GetFloat": {
         const shaderish = /^(Material|MaterialPropertyBlock|Shader|ComputeShader|CommandBuffer)$/.test(recvShort);
+        if (recvShort === "AudioMixer") {
+          each(0, (v) => {
+            if (v.open) return;
+            for (const t of named("parameter", v.s).filter((n) => /\.mixer$/i.test(n.path))) add(e.source, t.id, op.startsWith("Set") ? "sets" : "references", "inferred", `AudioMixer.${op}(${via(v)})`);
+          });
+          return;
+        }
         each(0, (v) => {
           if (v.open) return;
           const set = op.startsWith("Set") || op === "ResetTrigger";
@@ -728,6 +748,19 @@ export function resolveUnity(
           }
         });
         return;
+      case "LoadAssetAsync":
+      case "LoadAssetsAsync":
+      case "InstantiateAsync":
+      case "LoadResourceLocationsAsync":
+        if (recvShort !== "Addressables" && recvShort !== "AssetReference") return;
+        each(0, (v) => {
+          if (v.open) return;
+          for (const a of addresses.get(v.s) ?? []) {
+            const t = assetTarget(a);
+            if (t) add(e.source, t, "loads", "extracted", `Addressables.${op}(${via(v)})`);
+          }
+        });
+        return;
       case "FindAction":
       case "FindActionMap":
         each(0, (v) => {
@@ -797,7 +830,10 @@ export function resolveUnity(
       const t = byId.get(e.target);
       const field = e.via.split(", ")[0].replace(/^.*?\b(\w+)$/, "$1");
       const list = assigned.get(e.source) ?? [];
-      if (list.length < 3) list.push(`${field} → ${t?.path ?? e.target}`);
+      // an object in the same scene/prefab is named by its hierarchy path, an asset by its path
+      const goPath = t?.kind === "component" ? `"${/ on "(.*?)"/.exec(t.signature ?? "")?.[1] ?? t.name}"` : "";
+      const where = !t ? e.target : t.kind !== "component" ? t.path : t.path === src.path ? goPath : `${t.path} ${goPath}`;
+      if (list.length < 3) list.push(`${field} → ${where}`);
       assigned.set(e.source, list);
     }
     for (const [id, list] of assigned) {
@@ -821,6 +857,7 @@ export function resolveUnity(
   for (const id of fileNodes) {
     if (!id.toLowerCase().endsWith(".cs")) continue;
     if (!/^(Assets|Packages)\//.test(id)) continue;
+    if (!metaOf.size) break; // not a Unity project: no predefined assemblies to speak of
     const owner = asmDirs.find((a) => id.startsWith(`${a.dir}/`));
     if (owner) {
       if (byId.has(owner.id)) add(owner.id, id, "compiles", "extracted");
@@ -857,11 +894,12 @@ export function resolveUnity(
       asmOf.set(f, `${name} (no asmdef)`);
     }
   }
-  // one answer to "which scripts have no asmdef": the runtime node names the editor ones too
+  // one answer to "which scripts have no asmdef": each predefined assembly names the other's too
   const rt = byId.get("Assets#Assembly-CSharp");
-  if (rt && unowned.editor.length) {
+  const ed = byId.get("Assets#Assembly-CSharp-Editor");
+  if (rt && ed) {
     rt.signature = `${rt.signature} · Editor-folder scripts → Assembly-CSharp-Editor: ${unowned.editor.slice(0, 12).join(", ")}`;
-    rt.body_text = `${rt.body_text} ${unowned.editor.join(" ")}`;
+    ed.signature = `${ed.signature} · other scripts → Assembly-CSharp: ${unowned.runtime.slice(0, 12).join(", ")}`;
   }
   for (const n of nodes) {
     if (n.kind === "file" || n.kind === "class" || n.kind === "struct" || n.kind === "interface" || n.kind === "enum" || n.kind === "type") {

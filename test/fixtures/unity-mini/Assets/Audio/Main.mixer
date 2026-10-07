@@ -1,0 +1,10 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!241 &24100000
+AudioMixerController:
+  m_ObjectHideFlags: 0
+  m_Name: Main
+  m_ExposedParameters:
+  - guid: 0f2c7a1f8a9b4c3d9e8f7a6b5c4d3e2f
+    name: MusicVolume
+  m_MasterGroup: {fileID: 0}

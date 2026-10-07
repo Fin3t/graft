@@ -90,6 +90,8 @@ export interface UnityFacts {
     /** TagManager: layer index → name. */
     layers?: string[];
     tags?: string[];
+    /** Addressables group: address (and labels) → asset GUID. */
+    addresses?: Array<{ address: string; guid: string; labels?: string[] }>;
   };
 }
 
@@ -122,6 +124,9 @@ const YAML_KINDS: Record<string, string> = {
   ".brush": "brush",
   ".giparams": "giParams",
   ".shadervariants": "shaderVariants",
+  ".vfx": "vfx",
+  ".vfxoperator": "vfx",
+  ".vfxblock": "vfx",
 };
 const OTHER_KINDS: Record<string, string> = {
   ".meta": "meta",
@@ -611,6 +616,20 @@ function extractYamlAsset(rel: string, source: string, o: Out, kind: string): Un
   }
 
   for (const d of docs) {
+    // Addressables groups: each entry gives an asset an address code loads it by
+    const entries = itemsOf(d, "m_SerializeEntries").filter((i) => i.v.m_GUID && i.v.m_Address);
+    if (entries.length) {
+      asset.addresses = [...(asset.addresses ?? []), ...entries.map((i) => ({ address: i.v.m_Address, guid: i.v.m_GUID.toLowerCase() }))];
+      bodyParts.push(...entries.map((i) => i.v.m_Address));
+    }
+    // AudioMixer: exposed parameters are what `mixer.SetFloat("Name", v)` drives
+    if (d.classId === 241) {
+      for (const p of itemsOf(d, "m_ExposedParameters")) {
+        const pn = p.v.name;
+        if (pn) addNode(o, `Exposed/${pn}`, pn, "parameter", p.line, p.line + 1, `exposed AudioMixer parameter "${pn}" of ${d.name ?? basename(rel)}`, `${pn} audio mixer exposed parameter`);
+      }
+      sig = `AudioMixer "${d.name ?? basename(rel)}"`;
+    }
     if (d !== main && d.name) bodyParts.push(d.name); // sub-objects: renderer features, volume overrides, timeline tracks
     layerMaskRefs(d, rel, o);
     if (d === main && d.classId === MONOBEHAVIOUR) {

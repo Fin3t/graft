@@ -231,7 +231,9 @@ export function resolveEdges(
   if (cs) merge(cs.edges);
   // Unity assets: GUIDs, scripts, UnityEvents, strings in code. May mint nodes
   // (binary assets, package assets) into `nodes` and stamp engine entry points.
-  if ([...(opts.facts?.values() ?? [])].some((f) => f.unity)) {
+  // Also for a plain C# repo: engine/test-runner entry points ([Test], [MenuItem], …)
+  // are stamped there, Unity-only parts no-op without `.meta` facts.
+  if (cs || [...(opts.facts?.values() ?? [])].some((f) => f.unity)) {
     // the C# edges are visible to it (overrides of engine virtuals mark entries)
     merge(resolveUnity(nodes, rawEdges, opts.facts!, cs?.model ?? null, opts.unity ?? {}, out));
   }

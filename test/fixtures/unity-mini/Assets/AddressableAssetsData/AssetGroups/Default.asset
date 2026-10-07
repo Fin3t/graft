@@ -1,0 +1,13 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_Script: {fileID: 11500000, guid: bbc8ebb7f34ac4bc1a1a2c2d61b1dc61, type: 3}
+  m_Name: Default Local Group
+  m_GroupName: Default Local Group
+  m_SerializeEntries:
+  - m_GUID: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb1
+    m_Address: Hero
+    m_ReadOnly: 0
+    m_SerializedLabels: []

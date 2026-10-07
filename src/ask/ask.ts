@@ -661,6 +661,8 @@ function lexical(
   const baselineQueueHitsByGroup = new Map<string, () => AskHit[]>();
   const fileGroups: AskRankingGroup[] = [];
   const needsFileQueues = fileComplement && (fileTopLock || includeRankingMetadata);
+  // what a hit loads is the headline; what it sets/plays follows, 12 entries at most
+  const loadsFirst = (xs: string[]) => [...xs.filter((x) => x.startsWith("loads")), ...xs.filter((x) => !x.startsWith("loads"))].slice(0, 12);
   // Code → asset edges by source, for the wiring line under a hit (built once, lazily).
   let wiringBySource: Map<string, string[]> | null = null;
   const wiringOf = (id: string): string[] | undefined => {
@@ -670,11 +672,21 @@ function lexical(
         if (e.relation !== "loads" && e.relation !== "sets" && e.relation !== "plays" && e.relation !== "uses_shader") continue;
         const t = byId.get(e.target);
         const list = wiringBySource.get(e.source) ?? [];
-        if (list.length < 8) list.push(`${e.relation} → ${t ? (t.kind === "file" || t.kind === "asset" ? t.path : `${t.name} (${t.path})`) : e.target}`);
+        if (list.length < 16) list.push(`${e.relation} → ${t ? (t.kind === "file" || t.kind === "asset" ? t.path : `${t.name} (${t.path})`) : e.target}`);
         wiringBySource.set(e.source, list);
       }
     }
-    return wiringBySource.get(id);
+    const own = wiringBySource.get(id);
+    // a type answers for its members: FloorMark's shaders are loaded in one of its methods
+    const n = byId.get(id);
+    if (n && (n.kind === "class" || n.kind === "struct")) {
+      const prefix = `${id}.`;
+      const members: string[] = [];
+      for (const [src, list] of wiringBySource) if (src.startsWith(prefix)) members.push(...list);
+      const all = [...new Set([...(own ?? []), ...members])];
+      return all.length ? loadsFirst(all) : undefined;
+    }
+    return own ? loadsFirst(own) : undefined;
   };
   const makeSymbolHit = (id: string, hitScore: number, scope?: string): AskHit | null => {
     const n = byId.get(id);

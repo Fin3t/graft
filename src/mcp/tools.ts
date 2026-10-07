@@ -10,7 +10,7 @@ import { loadGraphCached } from '../graph/load.js';
 import { ensureFreshChildren, ensureFreshGraph, refreshNote } from '../graph/refresh.js';
 import { contextDirFor } from '../context/node-file.js';
 import { resolveSymbol, edgeWalk, type Direction, type EdgeHit } from '../graph/traverse.js';
-import { callersSavings, headerOf, hitLine, looseNoteFor, orderHits } from '../graph/traverse-cli.js';
+import { callersSavings, headerOf, hitLine, indirectTests, looseNoteFor, orderHits } from '../graph/traverse-cli.js';
 import { withSavings, setInputRate } from '../context/savings.js';
 import { sessionInputRate } from '../claude/session-metrics.js';
 import { grepGraph } from '../search/grep.js';
@@ -24,7 +24,7 @@ import {
   federateMap,
   readWorkspace,
 } from '../graph/workspace.js';
-import type { NodeV1 } from '../graph/types.js';
+import type { GraphV1, NodeV1 } from '../graph/types.js';
 import { canonicalToolName } from './tool-names.js';
 
 export interface ToolDef {
@@ -134,13 +134,18 @@ function renderMatches(
   showDepth: boolean,
   matches: NodeV1[],
   hitsFor: (n: NodeV1) => EdgeHit[],
+  graph?: GraphV1,
 ): string {
   return matches
     .map((m) => {
       const hits = orderHits(hitsFor(m));
-      const lines = [headerOf(m)];
+      const lines = [headerOf(m, graph)];
       if (hits.length === 0) lines.push(looseNoteFor(direction, m.name, matches.length, m.entry));
       else for (const h of hits) lines.push(hitLine(direction, h, showDepth));
+      if (graph && direction === 'in' && !showDepth) {
+        const tests = indirectTests(graph, m, hits);
+        if (tests.length) lines.push('  tests reaching it through one call:', ...tests);
+      }
       return lines.join('\n');
     })
     .join('\n\n');
@@ -299,7 +304,7 @@ async function callSingleTool(
               : 1;
         const results = matches.map((m) => ({ symbol: m, hits: edgeWalk(w, m, direction, depth) }));
         const byId = new Map(results.map((r) => [r.symbol.id, r.hits]));
-        const body = renderMatches(direction, depth > 1, matches, (m) => byId.get(m.id) ?? []);
+        const body = renderMatches(direction, depth > 1, matches, (m) => byId.get(m.id) ?? [], w);
         const text = withSavings(body, callersSavings(w, results));
         return { text, isError: false };
       }

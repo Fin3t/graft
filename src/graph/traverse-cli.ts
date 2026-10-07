@@ -17,6 +17,7 @@ import { contextDirFor } from "../context/node-file.js";
 import { withSavings, savingsFor, type Savings } from "../context/savings.js";
 import { loadGraphCached } from "./load.js";
 import { resolveSymbol, edgeWalk, type Direction, type EdgeHit } from "./traverse.js";
+import { isTestPath } from "../ask/ask.js";
 import type { GraphV1, NodeV1 } from "./types.js";
 
 export interface CallersCliOptions {
@@ -36,14 +37,60 @@ const DEFAULT_DEPTH = 1;
 /** Exported so the MCP `graft_trace_calls` tool (`src/mcp/tools.ts`) can render the
  * same human report format as the CLI, rather than re-implementing it — both
  * surfaces walk the same edges via the same `resolveSymbol` / `edgeWalk` core. */
-export function headerOf(n: NodeV1): string {
+export function headerOf(n: NodeV1, graph?: GraphV1): string {
   const pkg = n.pkg ? ` · package ${n.pkg} (third-party)` : "";
   const asm = n.asm ? ` · assembly ${n.asm}` : "";
   const head = `${n.name} · ${n.kind} · ${n.path}:${n.span}${pkg}${asm}`;
   // Called by the engine / an editor / the test runner rather than by repo code:
   // say so up front, so an empty callers list never reads as dead code.
   const names = n.names ? `\n  ↳ names ${n.names}` : "";
-  return n.entry ? `${head}\n  ⚙ ${n.entry}${names}` : `${head}${names}`;
+  const wiring = graph ? assetWiring(graph, n) : [];
+  const wires = wiring.length ? `\n  ↳ ${wiring.join(" · ")}` : "";
+  return n.entry ? `${head}\n  ⚙ ${n.entry}${names}${wires}` : `${head}${names}${wires}`;
+}
+
+/** What a symbol itself loads, sets or plays by name (Unity: a scene, a Resources
+ * asset, an Animator parameter) — context worth one line next to "who calls it". */
+function assetWiring(graph: GraphV1, n: NodeV1): string[] {
+  if (n.kind === "file") return [];
+  const byId = new Map(graph.nodes.map((x) => [x.id, x]));
+  const out: string[] = [];
+  for (const e of graph.edges) {
+    if (e.source !== n.id || (e.relation !== "loads" && e.relation !== "sets" && e.relation !== "plays")) continue;
+    const t = byId.get(e.target);
+    out.push(`${e.relation} → ${t ? (t.kind === "file" || t.kind === "asset" ? t.path : `${t.name} (${t.path})`) : e.target}`);
+    if (out.length >= 6) break;
+  }
+  return out;
+}
+
+/** Tests that reach `symbol` through exactly one intermediate call: "which tests
+ * cover X" is answered by them as much as by direct test callers. */
+export function indirectTests(graph: GraphV1, symbol: NodeV1, direct: EdgeHit[]): string[] {
+  const directIds = new Set(direct.map((h) => h.id));
+  const byId = new Map(graph.nodes.map((x) => [x.id, x]));
+  const callers = new Map<string, string[]>(); // target → callers (calls/invokes)
+  for (const e of graph.edges) {
+    if (e.relation !== "calls" && e.relation !== "invokes") continue;
+    const list = callers.get(e.target) ?? [];
+    list.push(e.source);
+    callers.set(e.target, list);
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const mid of callers.get(symbol.id) ?? []) {
+    const m = byId.get(mid);
+    if (!m || isTestPath(m.path)) continue;
+    for (const t of callers.get(mid) ?? []) {
+      if (directIds.has(t) || seen.has(t)) continue;
+      const tn = byId.get(t);
+      if (!tn || !isTestPath(tn.path)) continue;
+      seen.add(t);
+      out.push(`  test → ${m.name} ← ${tn.name} (${tn.path}:${tn.span})`);
+      if (out.length >= 12) return out;
+    }
+  }
+  return out;
 }
 
 /** `showDepth` is set for multi-hop walks (depth > 1), matching the old
@@ -264,9 +311,13 @@ export function runCallersCommand(query: string, dir: string, opts: CallersCliOp
   // One reader for the whole walk: several hits usually live in the same file.
   const read = fileReader(root);
   for (const { symbol, hits } of results) {
-    lines.push(headerOf(symbol));
+    lines.push(headerOf(symbol, graph));
     if (hits.length === 0) lines.push(looseNoteFor(direction, symbol.name, matches.length, symbol.entry));
     else for (const h of hits) lines.push(hitLine(direction, h, showDepth, quoteFor(h, symbol.name, read)));
+    if (direction === "in" && depth === 1) {
+      const tests = indirectTests(graph, symbol, hits);
+      if (tests.length) lines.push("  tests reaching it through one call:", ...tests);
+    }
     lines.push("");
   }
   const body = lines.join("\n").replace(/\n+$/, "\n");

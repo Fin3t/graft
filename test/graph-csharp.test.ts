@@ -153,6 +153,7 @@ test("C#: heritage through namespaces, partials, events, overrides", async () =>
   assert.equal(subs.length, 1);
   assert.match(subs[0].target, /Spawner\.OnDied$/);
   assert.equal(subs[0].via, "prefab.Died");
+  assert.ok(edges(graph, "references").includes("WalkerExt.Bump -> Walker"), "an extension method hangs on the type it extends");
   const ov = edges(graph, "overrides");
   assert.ok(ov.includes("Walker.Damage -> IDamageable.Damage"), ov.join("\n"));
   const refs = edges(graph, "references");
@@ -185,4 +186,29 @@ namespace Game.UI
   const calls = edges(graph, "calls");
   assert.ok(calls.includes("Screen.Close -> UiFactory.UiSound.Denied"), calls.join("\n"));
   assert.ok(calls.includes("Screen.Close -> Screen.Close"), "recursion through GetComponent<Screen>() on an unknown receiver");
+});
+
+test("callers: tests that reach a method through one call are listed", async () => {
+  const { graph } = await build({
+    "Assets/Walker.cs": WALKER,
+    "Assets/IDamageable.cs": IDAMAGEABLE,
+    "Assets/Hitter.cs": HITTER,
+    "Assets/Tests/HitterTests.cs": `using NUnit.Framework;
+namespace Game.Tests
+{
+    public class HitterTests
+    {
+        [Test]
+        public void Hit_Damages() { new Hitter().Hit2(null); }
+    }
+}
+`,
+  });
+  const { indirectTests } = await import("../src/graph/traverse-cli.js");
+  const { edgeWalk } = await import("../src/graph/traverse.js");
+  const damage = graph.nodes.find((n) => n.id === "Assets/Walker.cs#Game.Enemies.Walker.Damage" || n.id.endsWith("#Walker.Damage"))!;
+  const lines = indirectTests(graph, damage, edgeWalk(graph, damage, "in", 1));
+  assert.ok(lines.some((l) => /test → Hit2 ← Hit_Damages \(Assets\/Tests\/HitterTests\.cs:L\d+-L\d+\)/.test(l)), lines.join("\n"));
+  const entry = graph.nodes.find((n) => n.name === "Hit_Damages")?.entry ?? "";
+  assert.match(entry, /NUnit test \[Test\]/);
 });

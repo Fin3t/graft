@@ -545,7 +545,7 @@ const UNITY_STRING_OPS = new Set([
   "Find", // Shader.Find, GameObject.Find, transform.Find
   "LoadScene", "LoadSceneAsync", "GetSceneByName", "UnloadSceneAsync", "OpenScene", // scenes
   "LoadAssetAtPath", "LoadAllAssetsAtPath", "LoadMainAssetAtPath", "LoadPrefabContents", "ImportAsset", "AssetPathToGUID", // AssetDatabase
-  "LoadAssetAsync", "InstantiateAsync", // Addressables
+  "LoadAssetAsync", "LoadAssetsAsync", "InstantiateAsync", "LoadResourceLocationsAsync", // Addressables
   "SetTrigger", "ResetTrigger", "SetBool", "SetFloat", "SetInteger", "GetBool", "GetFloat", "GetInteger", "IsParameterControlledByCurve", // Animator params (also material SetFloat)
   "Play", "CrossFade", "CrossFadeInFixedTime", "PlayInFixedTime", "HasState", // Animator states
   "StringToHash", "PropertyToID",

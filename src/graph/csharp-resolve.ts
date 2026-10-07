@@ -1208,6 +1208,17 @@ export function resolveCSharp(
     }
   }
 
+  // Extension methods hang on the type they extend (`this Walker w` → Walker).
+  for (const list of extensions.values()) {
+    for (const m of list) {
+      const p0 = m.fact.params?.[0];
+      if (!p0 || !m.fact.id) continue;
+      const tv = resolveTypeText(scopeOfMember(m), p0.t);
+      const target = tv?.k === "in" ? tv.t.id : tv?.k === "ex" ? fqnOf(tv) : null;
+      if (target) add(m.fact.id, target, "references", "extracted", `extension method on ${tv && tv.k === "in" ? tv.t.name : target}`);
+    }
+  }
+
   // `overrides`: a member overriding a base member / implementing an interface member.
   for (const t of byKey.values()) {
     for (const [name, ms] of t.members) {

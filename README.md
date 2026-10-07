@@ -211,11 +211,30 @@ compiler-grade layer — all `$0` and deterministic (no model, no key):
   **Kotlin**, **PHP**, **Swift** (classes, structs, enums, actors, protocols;
   extension members attach to the extended type), **R** (`.R`/`.r` — plain
   functions, S3/S4/R6 classes and methods, roxygen `@export`,
-  `library()`/`source()` imports).
+  `library()`/`source()` imports), **C#** (namespaces and `using`s incl.
+  `using static`/aliases/`global using`, partial classes across files, nested and
+  generic types, records, properties/indexers/events/fields, extension methods,
+  overrides and interface dispatch; member calls typed through fields, locals,
+  `var`, `foreach`, `out var`, tuples and `GetComponent<T>()`).
+
+- **Unity** — a C# project's assets are part of the graph: `.meta` GUIDs, the
+  script/Animator components in scenes and prefabs (`attaches`), nested prefabs
+  and variants (`nests`, `variant_of`), serialized references (`assigns`),
+  UnityEvents and AnimationEvents (`invokes`), ScriptableObject assets
+  (`instance_of`), materials → shaders (`uses_shader`), Animator states and
+  parameters, Input System actions (and their generated wrapper / `PlayerInput`
+  messages), assembly definitions (`compiles`, `imports`), shader includes and
+  properties. Strings in code resolve too — `Resources.Load`, `Shader.Find`,
+  `SceneManager.LoadScene`, `AssetDatabase` paths, `SetTrigger`/`Play`,
+  `SetFloat("_X")`, tags, layers, `SendMessage`/`Invoke`. Methods the engine calls
+  (Unity messages, `[MenuItem]`, `[RuntimeInitializeOnLoadMethod]`,
+  `[InitializeOnLoad]`, tests, `-executeMethod` targets) are marked as entry
+  points rather than "no callers". Package sources in `Library/PackageCache` are
+  only named, not indexed; embedded packages are indexed but labelled foreign.
 
 - **Broad** — symbols (functions, classes, methods, types, …) plus name-resolved
   call edges via a generic tree-sitter extractor, one grammar per language:
-  **Rust, C, C++, C#, Ruby, Scala, Elixir, Solidity,
+  **Rust, C, C++, Ruby, Scala, Elixir, Solidity,
   OCaml, Zig, Dart, Clojure, Nix, Lua**.
 
 - **Compiler-grade edges (opt-in)** — `graft build --lsp` adds precise

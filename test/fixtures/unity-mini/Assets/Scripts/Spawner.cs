@@ -1,5 +1,7 @@
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.Audio;
+using UnityEngine.AddressableAssets;
 namespace Game
 {
     public class Spawner : MonoBehaviour
@@ -24,6 +26,8 @@ namespace Game
             SendMessage("Footstep");
         }
         void Later() { }
+        [SerializeField] private AudioMixer mixer;
+        void Sound() { mixer.SetFloat("MusicVolume", -10f); Addressables.LoadAssetAsync<GameObject>("Hero"); }
         void Again() { SceneManager.LoadSceneAsync(0); SceneManager.LoadScene(LevelScene); var (w, n) = Pick(); w.Footstep(); }
         (Walker, int) Pick() => (null, 0);
     }

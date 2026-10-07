@@ -24,7 +24,9 @@ import { contentHash } from "../util/id.js";
 import { readSourceFile } from "../util/source.js";
 import { readJson, writeJsonAtomic } from "../util/state.js";
 import { extractorStamp, pruneSidecars, type ExtractEntry } from "./extract-cache.js";
-import { listSourceStats } from "./source-files.js";
+import { listSourceFiles } from "./source-files.js";
+import { statSync } from "node:fs";
+import { relPosix } from "../util/paths.js";
 
 export const FINGERPRINT_PREFIX = "fingerprint";
 const FINGERPRINT_VERSION = 1;
@@ -155,13 +157,26 @@ export function probeDrift(root: string, outDir: string): Drift | null {
   const seen = new Set<string>();
 
   const onlyDirs = fp.onlyDirs && fp.onlyDirs.length > 0 ? new Set(fp.onlyDirs) : undefined;
-  for (const f of listSourceStats(root, outDir, undefined, onlyDirs)) {
-    seen.add(f.rel);
-    const print = fp.files[f.rel];
+  for (const abs of listSourceFiles(root, outDir, undefined, onlyDirs)) {
+    const rel = relPosix(root, abs);
+    seen.add(rel);
+    const print = fp.files[rel];
     if (!print) {
-      drift.added.push(f.rel);
+      drift.added.push(rel);
       continue;
     }
+    // A Unity `.meta` (a project has thousands) is probed for presence only: a
+    // new or deleted asset still shows up here, while an in-place GUID rewrite —
+    // rare, and in practice paired with a change to a file probed in full — waits
+    // for the next rebuild. This keeps the query-path probe near its old cost.
+    if (abs.endsWith(".meta")) continue;
+    let st: { size: number; mtimeMs: number };
+    try {
+      st = statSync(abs);
+    } catch {
+      continue; // vanished between the walk and the stat — the next probe sees it as removed
+    }
+    const f = { abs, rel, size: st.size, mtimeMs: st.mtimeMs };
     const [size, mtimeMs, hash] = print;
     if (statUnchanged({ size, mtimeMs, hash }, f)) continue;
     // Suspect: confirm by bytes, so a touch (or a checkout that restores the

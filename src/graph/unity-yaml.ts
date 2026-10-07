@@ -64,6 +64,8 @@ const ITEM_LISTS = new Set([
   "m_ActionEvents", "clipAnimations", "externalObjects", "m_Floats", "m_Colors", "m_Ints",
   "m_AddedComponents", "m_AddedGameObjects", "m_RemovedComponents", "m_RemovedGameObjects",
   "m_ValidKeywords", "m_InvalidKeywords", "m_ShaderKeywords", "RefIds", "m_Materials",
+  "m_SerializeEntries", // Addressables group: address → GUID
+  "m_ExposedParameters", // AudioMixer: exposed parameter names
 ]);
 
 /** Keys whose (often numerous) references are hierarchy plumbing, read via props. */
