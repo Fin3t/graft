@@ -10,24 +10,25 @@ import { claudeDistDir } from './paths.js';
 import { mergeJsonKey, serverEntry, type McpWrite } from '../hosts/mcp-config.js';
 import { hasGraftIndex } from '../graph/root.js';
 import type { PlannedWrite } from '../hosts/plan.js';
-import { repoUsesTrail, type Brand } from '../brand.js';
+import { repoWiredForTrail, type Brand } from '../brand.js';
 
 /**
  * The files `runInit` writes — pure, no writes, so `--dry-run` and the picker
  * can report them up front. All repo-local: the Claude Code layer never writes
  * outside the project.
  */
-export function claudeTargets(dir: string): PlannedWrite[] {
-  return claudeTargetsFor(dir, wiringName(dir));
+export function claudeTargets(dir: string, initBrand?: Brand): PlannedWrite[] {
+  return claudeTargetsFor(dir, wiringName(dir, initBrand));
 }
 
 /**
- * The name the Claude Code wiring goes by in `dir`: trail's in a repo that uses
- * trail (`trail init` made `.trail/`), graft's everywhere else. Decided by the
- * repo, not the machine, so teammates on either command write the same files.
+ * The name the Claude Code wiring goes by in `dir`: trail's where `trail init`
+ * is wiring it now (`initBrand`) or already did, graft's everywhere else.
+ * Otherwise decided by the repo, not the machine, so a teammate on graft
+ * refreshing the wiring writes the same files and never flips them back.
  */
-export function wiringName(dir: string): Brand {
-  return repoUsesTrail(dir) ? 'trail' : 'graft';
+export function wiringName(dir: string, initBrand?: Brand): Brand {
+  return initBrand === 'trail' || repoWiredForTrail(dir) ? 'trail' : 'graft';
 }
 
 /** `claudeTargets` under one name. Uninstall walks both, so either set comes out. */
@@ -79,10 +80,10 @@ export interface InitResult {
 
 export function runInit(
   dir: string,
-  opts: { build?: boolean; cliPath?: string; statusline?: boolean; global?: boolean; home?: string } = {},
+  opts: { build?: boolean; cliPath?: string; statusline?: boolean; global?: boolean; home?: string; brand?: Brand } = {},
 ): InitResult {
   // Same list `--dry-run` and the picker report, so the two can't drift apart.
-  const name = wiringName(dir);
+  const name = wiringName(dir, opts.brand);
   const [settings, statusline, hooks, skill, mcpTarget] = claudeTargetsFor(dir, name).map((t) => t.path);
 
   mkdirSync(dirname(statusline), { recursive: true });

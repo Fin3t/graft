@@ -5,9 +5,9 @@ import type { Brand } from "../brand.js";
 // repo copy is regenerated from here when `init` runs in this repo. Mirrors the `.cjs`
 // shim pattern in shim-template.ts.
 //
-// `brand` is the repo's name for the tool, not the machine's: a repo with
-// `.trail/` gets the trail text, whoever refreshes it, so teammates on graft and
-// trail never flip the committed file back and forth.
+// `brand` is the repo's name for the tool, not the machine's: a repo wired by
+// `trail init` gets the trail text, whoever refreshes it, so teammates on graft
+// and trail never flip the committed file back and forth.
 export function skillTemplate(brand: Brand = "graft"): string {
   return brand === "trail" ? trailSkill(graftSkill()) : graftSkill();
 }
@@ -15,7 +15,7 @@ export function skillTemplate(brand: Brand = "graft"): string {
 /**
  * The graft text with trail's spelling. The code map still lives in `graft/`,
  * so a `graft` followed by `/` is a path and stays; `graft check` became
- * `trail build --check`. Then the part only trail has: the team's notes.
+ * `trail build --check`. Then the part only trail has: session notes.
  */
 function trailSkill(graft: string): string {
   const text = graft
@@ -24,17 +24,19 @@ function trailSkill(graft: string): string {
     .replace(/\bgraft\b(?![/\w-])/g, "trail");
   return `${text.trimEnd()}
 
-## Team notes in .trail/
-Teammates' sessions leave notes in \`.trail/notes/\`: what they decided, tried
-and ruled out, and what it took to work out. \`trail ask\` puts the ones that
-bear on your task above the code, so read them before exploring. When a note
-saved you work, add to your tally how much of it came from that note, using
-the cost printed with it.
+## Session notes
+Past sessions on this repo leave notes: what they decided, tried and ruled
+out, and what it took to work out. They're kept on each person's machine in
+\`~/.trail/\`, never in the repo. \`trail ask\` puts the ones that bear on
+your task above the code, so read them before exploring. When a note saved
+you work, add to your tally how much of it came from that note, using the
+cost printed with it.
 
 When you finish a task that took real digging, leave a note for the next
-person: \`trail note --title "<what it was about>"\` with the note on stdin,
+session: \`trail note --title "<what it was about>"\` with the note on stdin,
 under \`## Decided\`, \`## Tried and ruled out\` and \`## Watch out\`. A summary,
-never a transcript, and nothing secret: it gets committed.
+never a transcript, and nothing secret. It stays on this machine until its
+owner shares it with \`trail login\`.
 
 If \`trail\` isn't installed on this machine but \`graft\` is, it's the same
 command under its old name.

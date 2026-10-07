@@ -110,10 +110,10 @@ export interface AskResult {
    * callers must not re-sort this list by `score`. */
   hits: AskHit[];
   note?: string;
-  /** Teammates' notes from `.trail/notes/` that bear on this query, best first.
+  /** Past sessions' notes (notes/home.ts) that bear on this query, best first.
    *  Set by `attachNotes` (notes/ask-notes.ts), never by the ranker. */
   notes?: NoteHit[];
-  /** The repo has a `.trail/notes/` folder, so an empty `notes` means "none
+  /** The repo keeps notes on this machine, so an empty `notes` means "none
    *  about this yet" rather than "this repo keeps no notes". */
   notesChecked?: boolean;
   /** Token-saving estimate, set only in `--source` (retriever) mode: the whole
@@ -1510,12 +1510,12 @@ export function formatAsk(r: AskResult): string {
         .map((l) => (l.startsWith("structural index:") ? `⚠ ${l}` : l))
         .join("\n")
     : "";
-  // Teammates' notes go first: a decision someone already made, or an approach
-  // they already ruled out, changes how the code below should be read.
+  // Notes go first: a decision a past session already made, or an approach it
+  // already ruled out, changes how the code below should be read.
   const teamNotes = r.notes?.length
     ? formatNoteHits(r.notes)
     : r.notesChecked
-      ? ["· no notes in .trail/ about this yet", ""]
+      ? ["· no notes about this yet", ""]
       : [];
   if (r.hits.length === 0) {
     if (r.notes?.length) return `${head}\n\n${teamNotes.join("\n").trimEnd()}\n\n${noteBlock || "no code matches."}${escalationNudge(r)}\n`;

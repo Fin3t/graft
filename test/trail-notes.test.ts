@@ -1,16 +1,16 @@
 /**
- * `.trail/notes/`: one note per session, written by `trail note`, read back by
- * `ask` for the next person who works on the same thing.
+ * Session notes: one note per session, written by `trail note` into
+ * `~/.trail/repos/<repo>/notes/`, read back by `ask` for the next session on
+ * the same thing. Never in the repo.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   costLabel,
-  ensureTrailDir,
   findNotes,
   formatNoteHits,
   listNotes,
@@ -24,8 +24,12 @@ import {
   type Note,
 } from "../src/notes/notes.js";
 import { costFromTranscript } from "../src/notes/session-cost.js";
-import { trailBlock } from "../src/notes/instructions.js";
+import { ensureRepoHome, repoPlace } from "../src/notes/home.js";
 import { homeEnv, tmpRepo } from "./helpers.js";
+
+// Everything this file writes in-process goes to a scratch ~/.trail.
+const TRAIL_HOME = mkdtempSync(join(tmpdir(), "notes-trail-home-"));
+process.env.TRAIL_HOME = TRAIL_HOME;
 
 const BODY = [
   "## Decided",
@@ -40,7 +44,7 @@ const BODY = [
 
 function note(over: Partial<Note> = {}): Note {
   return {
-    path: ".trail/notes/2026-10-07-bbox-priya.md",
+    path: join(homedir(), ".trail", "repos", "github.com", "acme", "extract", "notes", "2026-10-07-bbox-priya.md"),
     title: "Bbox coordinates are off on rotated PDFs",
     author: "Priya",
     date: "2026-10-07",
@@ -71,24 +75,28 @@ test("a file without a title isn't a note", () => {
   assert.equal(parseNote("---\nauthor: x\n---\nbody", "x.md"), null);
 });
 
-test("writeNote names the file by date, title and author, and never overwrites", () => {
+test("writeNote names the file by date, title and author, never overwrites, and writes nothing into the repo", () => {
   const repo = tmpRepo("notes-write");
   const a = writeNote(repo, { title: "Bbox coordinates are off on rotated PDFs", body: BODY, author: "Priya", date: "2026-10-07" });
   const b = writeNote(repo, { title: "Bbox coordinates are off on rotated PDFs", body: "again", author: "Priya", date: "2026-10-07" });
-  assert.equal(a.path, ".trail/notes/2026-10-07-bbox-coordinates-are-off-on-rotated-priya.md");
-  assert.equal(b.path, ".trail/notes/2026-10-07-bbox-coordinates-are-off-on-rotated-priya-2.md");
-  assert.match(readFileSync(join(repo, a.path), "utf8"), /Rotate each box/);
+  const notes = join(repoPlace(repo).dir, "notes");
+  assert.ok(notes.startsWith(join(TRAIL_HOME, "repos", "local") + "/"), notes);
+  assert.equal(a.path, join(notes, "2026-10-07-bbox-coordinates-are-off-on-rotated-priya.md"));
+  assert.equal(b.path, join(notes, "2026-10-07-bbox-coordinates-are-off-on-rotated-priya-2.md"));
+  assert.match(readFileSync(a.path, "utf8"), /Rotate each box/);
   assert.equal(listNotes(repo).length, 2);
+  assert.deepEqual(readdirSync(repo), [], "the repo itself is untouched");
 });
 
-test("ensureTrailDir writes the README once and keeps someone's edits", () => {
+test("ensureRepoHome makes the folder once and writes ~/.trail's README once, keeping someone's edits", () => {
   const repo = tmpRepo("notes-dir");
-  assert.equal(ensureTrailDir(repo).created, true);
-  assert.match(readFileSync(join(repo, ".trail", "README.md"), "utf8"), /^# \.trail/);
-  assert.ok(existsSync(join(repo, ".trail", "notes", ".gitkeep")));
-  writeFileSync(join(repo, ".trail", "README.md"), "ours\n");
-  assert.equal(ensureTrailDir(repo).created, false);
-  assert.equal(readFileSync(join(repo, ".trail", "README.md"), "utf8"), "ours\n");
+  assert.equal(ensureRepoHome(repo).created, true);
+  assert.ok(existsSync(join(repoPlace(repo).dir, "notes")));
+  const readme = join(TRAIL_HOME, "README.md");
+  assert.match(readFileSync(readme, "utf8"), /^# ~\/\.trail/);
+  writeFileSync(readme, "ours\n");
+  assert.equal(ensureRepoHome(repo).created, false);
+  assert.equal(readFileSync(readme, "utf8"), "ours\n");
 });
 
 test("small formatting helpers", () => {
@@ -127,7 +135,7 @@ test("ask's notes block names the author, the date, each section's lead and the 
     "  decided     Rotate each box in `NormalizeBox` by its own page's `/Rotate` before scaling.",
     "  ruled out   Rotating the image before OCR. Works, but doubles latency on long files.",
     "  watch out   `/Rotate` can be 270 on a single page inside an otherwise upright file.",
-    "  .trail/notes/2026-10-07-bbox-priya.md · took 12 min and ~9.6k tokens to work out",
+    "  ~/.trail/repos/github.com/acme/extract/notes/2026-10-07-bbox-priya.md · took 12 min and ~9.6k tokens to work out",
     "",
   ]);
 });
@@ -170,19 +178,29 @@ test("cost starts after the session's last finished note, not the one being writ
   assert.equal(costFromTranscript(t, Date.parse(at(3)))?.tokens, 600);
 });
 
+test("the cost carries the files the session edited since its last note, for the repos the note goes to", () => {
+  const edit = (id: string, name: string, input: object) =>
+    line({ type: "assistant", timestamp: at(1), message: { id, usage: usage(0, 0, 10), content: [{ type: "tool_use", id, name, input }] } });
+  const t = [
+    edit("e0", "Edit", { file_path: "/src/extract/old.go" }),
+    line({ type: "assistant", timestamp: at(1), message: { id: "n", usage: usage(0, 0, 1), content: [{ type: "tool_use", id: "n1", name: "Bash", input: { command: "trail note --title first" } }] } }),
+    line({ type: "user", timestamp: at(1), message: { content: [{ type: "tool_result", tool_use_id: "n1", content: "✓" }] } }),
+    edit("e1", "Edit", { file_path: "/src/extract/internal/ocr/bbox.go" }),
+    edit("e2", "Write", { file_path: "/src/ocr-lib/rotate.py" }),
+    edit("e3", "MultiEdit", { file_path: "/src/extract/internal/ocr/bbox.go" }),
+    edit("e4", "NotebookEdit", { notebook_path: "/src/extract/notebooks/rotation.ipynb" }),
+    edit("e5", "Read", { file_path: "/src/extract/README.md" }),
+  ].join("\n");
+  assert.deepEqual(costFromTranscript(t, Date.parse(at(2)))?.edited, [
+    "/src/extract/internal/ocr/bbox.go",
+    "/src/ocr-lib/rotate.py",
+    "/src/extract/notebooks/rotation.ipynb",
+  ]);
+});
+
 test("no transcript entries, no cost", () => {
   assert.equal(costFromTranscript("", Date.now()), null);
   assert.equal(costFromTranscript("not json\n", Date.now()), null);
-});
-
-// --- the block that tells agents about .trail/ ---
-
-test("the Trail block tells an agent to read .trail/, how to install trail, and to leave a note", () => {
-  const b = trailBlock("claude");
-  assert.match(b, /check `\.trail\/`/);
-  assert.match(b, /npm install -g @trailhq\/trail && trail init --agents claude --yes/);
-  assert.match(b, /trail note --title/);
-  assert.match(trailBlock(), /trail init --yes/);
 });
 
 // --- end to end ---
@@ -192,7 +210,7 @@ function run(name: "trail" | "graft", args: string[], home: string, input?: stri
   const r = spawnSync(process.execPath, ["--import", "tsx", join(process.cwd(), "src", "bin", `${name}.ts`), ...args], {
     input,
     encoding: "utf8",
-    env: { ...process.env, ...homeEnv(home), DO_NOT_TRACK: "1", CLAUDECODE: undefined, TRAIL_INVOKED_AS: undefined },
+    env: { ...process.env, ...homeEnv(home), DO_NOT_TRACK: "1", CLAUDECODE: undefined, TRAIL_INVOKED_AS: undefined, TRAIL_HOME: undefined },
   });
   return { status: r.status, out: r.stdout, err: r.stderr };
 }
@@ -210,25 +228,31 @@ function repoWithCode(): string {
   return d;
 }
 
-test("trail init adds .trail/ and the Trail block; graft init adds neither", () => {
+/** The one folder of notes under a scratch HOME's ~/.trail/repos. */
+function notesUnder(home: string): string {
+  const local = join(home, ".trail", "repos", "local");
+  const [key] = readdirSync(local);
+  return join(local, key!, "notes");
+}
+
+test("trail init keeps notes in ~/.trail and adds nothing about them to the repo; graft init makes no notes folder", () => {
   const home = mkdtempSync(join(tmpdir(), "notes-home-"));
   const d = repoWithCode();
   const t = run("trail", ["init", d, "--agents", "claude", "--yes", "--no-global"], home);
   assert.equal(t.status, 0, t.err);
-  assert.match(t.err, /✓ \.trail\/ {4}ready · every session you finish leaves a short note here/);
-  assert.match(t.err, /✓ CLAUDE\.md {2}Trail block added/);
-  assert.ok(existsSync(join(d, ".trail", "README.md")));
-  const md = readFileSync(join(d, "CLAUDE.md"), "utf8");
-  assert.ok(md.startsWith("# extract\n\nTeam rules.\n"), "the team's own text stays first");
-  assert.match(md, /<!-- trail:start -->\n## Trail\n/);
+  assert.match(t.err, /✓ notes {6}kept in ~\/\.trail\/repos\/local\/[^ ]+ · every session you finish leaves a short note there, never in the repo/);
+  assert.match(t.err, /the code map in graft\/ and your notes stay on this machine/);
+  assert.ok(existsSync(notesUnder(home)));
+  assert.equal(existsSync(join(d, ".trail")), false);
+  assert.equal(readFileSync(join(d, "CLAUDE.md"), "utf8"), "# extract\n\nTeam rules.\n", "the team's CLAUDE.md is untouched");
 
   const g = repoWithCode();
-  assert.equal(run("graft", ["init", g, "--agents", "claude", "--yes", "--no-global"], home).status, 0);
-  assert.equal(existsSync(join(g, ".trail")), false);
-  assert.doesNotMatch(readFileSync(join(g, "CLAUDE.md"), "utf8"), /trail:start/);
+  const home2 = mkdtempSync(join(tmpdir(), "notes-home-"));
+  assert.equal(run("graft", ["init", g, "--agents", "claude", "--yes", "--no-global"], home2).status, 0);
+  assert.equal(existsSync(join(home2, ".trail")), false);
 });
 
-test("trail note saves the note, ask shows it to the next person, uninstall leaves it", () => {
+test("trail note saves the note in ~/.trail, ask shows it to the next session, uninstall leaves it", () => {
   const home = mkdtempSync(join(tmpdir(), "notes-home-"));
   const d = repoWithCode();
   run("trail", ["init", d, "--agents", "claude", "--yes", "--no-global"], home);
@@ -239,25 +263,33 @@ test("trail note saves the note, ask shows it to the next person, uninstall leav
 
   const saved = run("trail", ["note", d, "--title", "Bbox coordinates are off on rotated PDFs", "--minutes", "12", "--tokens", "9600"], home, BODY);
   assert.equal(saved.status, 0, saved.err);
-  assert.match(saved.out, /^✓ note saved · \.trail\/notes\/\d{4}-\d{2}-\d{2}-bbox-coordinates-are-off-on-rotated-priya\.md$/m);
-  assert.match(saved.out, /this took 12 min and ~9\.6k tokens to figure out\. the next person who touches bbox\.go gets it for ~\d+/);
-  const [file] = readdirSync(join(d, ".trail", "notes")).filter((f) => f.endsWith(".md"));
-  const written = parseNote(readFileSync(join(d, ".trail", "notes", file!), "utf8"), "x");
+  assert.match(saved.out, /^✓ note saved · ~\/\.trail\/repos\/local\/[^/]+\/notes\/\d{4}-\d{2}-\d{2}-bbox-coordinates-are-off-on-rotated-priya\.md$/m);
+  assert.match(saved.out, /this took 12 min and ~9\.6k tokens to figure out\. the next session that touches bbox\.go gets it for ~\d+/);
+  assert.match(saved.out, /^· kept on this machine, never in the repo$/m);
+  const [file] = readdirSync(notesUnder(home)).filter((f) => f.endsWith(".md"));
+  const written = parseNote(readFileSync(join(notesUnder(home), file!), "utf8"), "x");
   assert.equal(written?.author, "Priya");
   assert.deepEqual(written?.touches, ["internal/ocr/bbox.go"], "the changed file, not the wiring init wrote");
+  const status = spawnSync("git", ["status", "--porcelain"], { cwd: d, encoding: "utf8" }).stdout;
+  assert.equal(status, " M internal/ocr/bbox.go\n", "git sees only the code change");
 
-  // A teammate still on graft gets the note too.
-  for (const name of ["trail", "graft"] as const) {
-    const ask = run(name, ["ask", "bbox rotated pdf", d], home);
+  // Asked from either name, and from a subfolder of the repo.
+  for (const [name, dir] of [["trail", d], ["graft", d], ["trail", join(d, "internal")]] as const) {
+    const ask = run(name, ["ask", "bbox rotated pdf", dir], home);
     assert.equal(ask.status, 0, ask.err);
     assert.match(ask.out, /from Priya's note · \w{3} \d+ · Bbox coordinates are off on rotated PDFs/);
     assert.match(ask.out, /ruled out {3}Rotating the image before OCR/);
+    assert.match(ask.out, /~\/\.trail\/repos\/local\/[^/]+\/notes\//);
   }
+
+  const st = run("trail", ["status", d], home);
+  assert.equal(st.status, 0, st.err);
+  assert.match(st.out, /^notes {7}1 · in ~\/\.trail\/repos\/local\/[^/]+$/m);
+  assert.equal(JSON.parse(run("trail", ["status", d, "--json"], home).out).notes.count, 1);
 
   const un = run("trail", ["uninstall", d, "-y", "--no-global"], home);
   assert.equal(un.status, 0, un.err);
-  assert.doesNotMatch(readFileSync(join(d, "CLAUDE.md"), "utf8"), /trail:start/);
-  assert.ok(existsSync(join(d, ".trail", "notes", file!)), "the team's notes are theirs, never uninstalled");
+  assert.ok(existsSync(join(notesUnder(home), file!)), "notes are the person's, never uninstalled");
 });
 
 test("trail note without a body says how to write one", () => {
@@ -269,7 +301,7 @@ test("trail note without a body says how to write one", () => {
 
 // --- what agents read in a repo that uses trail ---
 
-test("the skill speaks trail in a repo with .trail/, keeps graft/ paths, and teaches notes", async () => {
+test("the skill speaks trail in a repo wired for it, keeps graft/ paths, and teaches notes", async () => {
   const { skillTemplate } = await import("../src/claude/skill-template.js");
   const graft = skillTemplate("graft");
   const trail = skillTemplate("trail");
@@ -281,20 +313,28 @@ test("the skill speaks trail in a repo with .trail/, keeps graft/ paths, and tea
   assert.match(trail, /`graft\/` holds a graph/, "the code map folder is still graft/");
   assert.doesNotMatch(trail, /\bgraft (ask|grep|skeleton|callers|map|build|check)\b/);
   assert.match(trail, /trail note --title/);
+  assert.match(trail, /`~\/\.trail\/`, never in the repo/);
+  assert.doesNotMatch(trail, /\.trail\/notes|gets committed/);
 });
 
-test("the session-start directive mentions notes only where there are some", async () => {
+test("the session-start directive mentions notes only in a repo that keeps them", async () => {
   const { formatOrientation } = await import("../src/claude/format.js");
-  assert.doesNotMatch(formatOrientation("# map", 100), /\.trail\//);
-  assert.match(formatOrientation("# map", 100, undefined, 3), /Teammates have left 3 notes in \.trail\//);
+  assert.doesNotMatch(formatOrientation("# map", 100), /note/);
+  const some = formatOrientation("# map", 100, undefined, 3, true);
+  assert.match(some, /This repo has 3 notes from past sessions/);
+  assert.match(some, /leave a note for the next session/);
+  const none = formatOrientation("# map", 100, undefined, 0, true);
+  assert.doesNotMatch(none, /This repo has/);
+  assert.match(none, /leave a note for the next session/, "a repo set up for notes is told to leave one from the first session");
 });
 
-test("hooks speak trail only in a repo that uses it, on a machine with trail installed", async () => {
+test("hooks speak trail only in a repo wired for it, on a machine with trail installed", async () => {
   const { adoptRepoBrand } = await import("../src/brand.js");
   const bin = mkdtempSync(join(tmpdir(), "notes-bin-"));
   writeFileSync(join(bin, process.platform === "win32" ? "trail.cmd" : "trail"), "");
   const withTrail = tmpRepo("brand-repo");
-  ensureTrailDir(withTrail);
+  mkdirSync(join(withTrail, ".claude", "helpers"), { recursive: true });
+  writeFileSync(join(withTrail, ".claude", "helpers", "trail-hooks.cjs"), "");
   const plain = tmpRepo("brand-plain");
   assert.equal(adoptRepoBrand(withTrail, { PATH: bin }), "trail");
   assert.equal(adoptRepoBrand(withTrail, { PATH: "" }), "graft", "trail not installed: don't suggest it");

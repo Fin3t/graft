@@ -30,17 +30,8 @@ export interface Markers {
 export const GRAFT_MARKERS: Markers = { start: START, end: END };
 export const BRAIN_MARKERS: Markers = { start: BRAIN_START, end: BRAIN_END };
 
-/**
- * The Trail block: tells an agent to check the team's notes in `.trail/`
- * before exploring, and to leave one when it's done. Its own region, so it
- * lives beside graft's code-map block and is removed with the rest.
- */
-export const TRAIL_START = '<!-- trail:start -->';
-export const TRAIL_END = '<!-- trail:end -->';
-export const TRAIL_MARKERS: Markers = { start: TRAIL_START, end: TRAIL_END };
-
 /** Every managed region graft may own in a user-owned file. */
-export const ALL_MARKERS: Markers[] = [GRAFT_MARKERS, BRAIN_MARKERS, TRAIL_MARKERS];
+export const ALL_MARKERS: Markers[] = [GRAFT_MARKERS, BRAIN_MARKERS];
 
 export type UpsertAction = 'created' | 'appended' | 'replaced' | 'unchanged';
 

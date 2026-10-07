@@ -1,29 +1,22 @@
 /**
- * `.trail/notes/`: one short note per coding session, committed with the code.
+ * Session notes: one short note per coding session, kept on this machine in
+ * `~/.trail/repos/<repo>/notes/` (see home.ts for how a repo gets its key).
  *
  * A note is what a session worked out that the code itself doesn't say: what
  * was decided, what was tried and ruled out, and what to watch out for, plus
- * what it cost to figure out. Teammates' agents read it before exploring, so
- * the next person who touches the same code doesn't pay for it again.
+ * what it cost to figure out. The next session on the same code reads it
+ * before exploring, so nobody pays for it twice.
  *
- * One file per session and never edited after it's written, so two people
- * writing notes on the same day never conflict on a pull. A summary only,
+ * One file per session and never edited after it's written. A summary only,
  * never a transcript: the agent writes the body, and nothing here reads
  * source files or prompts into it.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { readdirSync, readFileSync, existsSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import matter from "gray-matter";
-
-export const TRAIL_DIR = ".trail";
-
-export function trailDir(repo: string): string {
-  return join(repo, TRAIL_DIR);
-}
-
-export function notesDir(repo: string): string {
-  return join(repo, TRAIL_DIR, "notes");
-}
+import { changedFiles, ownPath } from "./git-facts.js";
+import { checkoutRoot, childCheckouts, ensureRepoHome, notePlaces, repoPlace, shownPath } from "./home.js";
 
 export interface NoteCost {
   minutes?: number;
@@ -31,7 +24,7 @@ export interface NoteCost {
 }
 
 export interface Note {
-  /** Repo-relative, forward slashes. */
+  /** Where the note is: an absolute path on this machine. */
   path: string;
   title: string;
   author: string;
@@ -39,7 +32,7 @@ export interface Note {
   date: string;
   branch?: string;
   cost?: NoteCost;
-  /** `file` or `file#Symbol`, repo-relative. */
+  /** `file` or `file#Symbol`, relative to the top of the checkout (or to the folder `listNotes` was asked about). */
   touches: string[];
   body: string;
 }
@@ -50,39 +43,6 @@ export const SECTIONS = [
   { key: "ruledOut", heading: "Tried and ruled out", label: "ruled out" },
   { key: "watchOut", heading: "Watch out", label: "watch out" },
 ] as const;
-
-/* -------------------------------------------------------------------------- */
-/* the folder                                                                 */
-/* -------------------------------------------------------------------------- */
-
-export const TRAIL_README = `# .trail
-
-Notes from this team's coding sessions, kept by Trail. Each file is one
-session: what got decided, what was tried and ruled out, and what it took
-to figure out. Coding agents read these before exploring, so nobody pays
-to work the same thing out twice.
-
-- notes/    one file per session, never edited after it's written
-- skills/   how-tos your agents follow, and the corrections that improve them
-
-Get it: npm install -g @trailhq/trail && trail init
-`;
-
-/**
- * Create `.trail/` with its README and an empty `notes/`. Never touches a
- * README someone has edited. Returns whether the folder was new.
- */
-export function ensureTrailDir(repo: string): { created: boolean } {
-  const dir = trailDir(repo);
-  const created = !existsSync(dir);
-  mkdirSync(join(dir, "notes"), { recursive: true });
-  const readme = join(dir, "README.md");
-  if (!existsSync(readme)) writeFileSync(readme, TRAIL_README);
-  // git keeps no empty folders; this keeps notes/ in the first commit.
-  const keep = join(dir, "notes", ".gitkeep");
-  if (!existsSync(keep) && readdirSync(join(dir, "notes")).length === 0) writeFileSync(keep, "");
-  return { created };
-}
 
 /* -------------------------------------------------------------------------- */
 /* reading and writing one note                                               */
@@ -135,22 +95,38 @@ export function parseNote(text: string, path: string): Note | null {
   };
 }
 
-/** Every note in `.trail/notes/`, newest first. Unreadable files are skipped. */
-export function listNotes(repo: string): Note[] {
-  const dir = notesDir(repo);
-  let files: string[];
-  try {
-    files = readdirSync(dir).filter((f) => f.endsWith(".md"));
-  } catch {
-    return [];
-  }
+/** A touch saved relative to `checkout`, as a path relative to `here`. */
+function rebaseTouch(t: string, checkout: string, here: string): string {
+  if (checkout === here) return t;
+  const [file, ...sym] = t.split("#");
+  const rel = relative(here, join(checkout, file!)).split(sep).join("/");
+  return [rel, ...sym].join("#");
+}
+
+/**
+ * Every note that bears on the folder `dir`, newest first: its repo's, or, for
+ * a folder that holds several repos, its own and each repo's. Touches come
+ * back relative to `dir`, so they line up with a query run there.
+ * Unreadable files are skipped.
+ */
+export function listNotes(dir: string): Note[] {
+  const here = resolve(dir);
   const out: Note[] = [];
-  for (const f of files) {
+  for (const place of notePlaces(here)) {
+    const notes = join(place.dir, "notes");
+    let files: string[];
     try {
-      const n = parseNote(readFileSync(join(dir, f), "utf8"), relative(repo, join(dir, f)).split("\\").join("/"));
-      if (n) out.push(n);
+      files = readdirSync(notes).filter((f) => f.endsWith(".md"));
     } catch {
-      /* unreadable: skip */
+      continue;
+    }
+    for (const f of files) {
+      try {
+        const n = parseNote(readFileSync(join(notes, f), "utf8"), join(notes, f));
+        if (n) out.push({ ...n, touches: n.touches.map((t) => rebaseTouch(t, place.checkout, here)) });
+      } catch {
+        /* unreadable: skip */
+      }
     }
   }
   return out.sort((a, b) => (a.date === b.date ? b.path.localeCompare(a.path) : b.date.localeCompare(a.date)));
@@ -192,15 +168,15 @@ export interface WriteNoteInput {
 }
 
 /**
- * Write a new note and return its repo-relative path. Never overwrites: a
- * second note with the same name on the same day gets `-2`, `-3`.
+ * Write a new note into the repo `dir` is in, and return it. Never
+ * overwrites: a second note with the same name on the same day gets `-2`,
+ * `-3`.
  */
-export function writeNote(repo: string, input: WriteNoteInput): Note {
-  ensureTrailDir(repo);
-  const dir = notesDir(repo);
+export function writeNote(dir: string, input: WriteNoteInput): Note {
+  const notes = join(ensureRepoHome(dir).place.dir, "notes");
   const base = [input.date, slug(input.title) || "note", slug(input.author, 1)].filter(Boolean).join("-");
   let name = `${base}.md`;
-  for (let i = 2; existsSync(join(dir, name)); i++) name = `${base}-${i}.md`;
+  for (let i = 2; existsSync(join(notes, name)); i++) name = `${base}-${i}.md`;
   const note: Omit<Note, "path"> = {
     title: input.title.trim(),
     author: input.author,
@@ -210,8 +186,58 @@ export function writeNote(repo: string, input: WriteNoteInput): Note {
     touches: input.touches ?? [],
     body: input.body,
   };
-  writeFileSync(join(dir, name), renderNote(note));
-  return { ...note, path: `${TRAIL_DIR}/notes/${name}` };
+  writeFileSync(join(notes, name), renderNote(note));
+  return { ...note, path: join(notes, name) };
+}
+
+export interface NoteTarget {
+  /** A folder in the repo the note goes to. */
+  dir: string;
+  /** What the session touched there, relative to the top of that checkout. */
+  touches: string[];
+}
+
+/** Most files one note lists per repo. */
+const TOUCH_LIMIT = 10;
+
+/**
+ * Which repos a session's note belongs in, and what it touched in each.
+ *
+ * The repo the note was saved from gets the files it has uncommitted or
+ * committed since `since`. Every other repo the session edited (`edited`:
+ * absolute paths, from the agent's transcript) gets the note too, with its
+ * own files, so a session that changed a backend and the library it calls
+ * leaves a note in both. Saved from a folder that holds several repos, the
+ * note goes to each repo the session changed, or stays with the folder when
+ * it changed none. Two worktrees of one repo are one repo.
+ */
+export function noteTargets(dir: string, edited: string[] = [], since?: number): NoteTarget[] {
+  const here = repoPlace(dir);
+  const byKey = new Map<string, { dir: string; files: string[] }>();
+  const add = (checkout: string, files: string[]) => {
+    const key = repoPlace(checkout).key;
+    const entry = byKey.get(key) ?? { dir: checkout, files: [] };
+    for (const f of files) if (f && !ownPath(f) && !entry.files.includes(f)) entry.files.push(f);
+    byKey.set(key, entry);
+  };
+  if (here.git) add(here.checkout, changedFiles(here.checkout, since));
+  else if (edited.length === 0) for (const c of childCheckouts(here.checkout)) add(c, changedFiles(c, since));
+  // The agent's own files (memory, plans, scratch under ~/.claude) aren't what a note is about.
+  const agentFiles = join(homedir(), ".claude") + sep;
+  for (const f of edited) {
+    if (f.startsWith(agentFiles)) continue;
+    const top = checkoutRoot(dirname(f));
+    if (top) add(top, [relative(top, f).split(sep).join("/")]);
+    else if (!here.git && !relative(here.checkout, f).startsWith("..")) add(here.checkout, [relative(here.checkout, f).split(sep).join("/")]);
+  }
+  const out = [...byKey.entries()]
+    .filter(([key, e]) => e.files.length > 0 || key === here.key)
+    .map(([, e]) => ({ dir: e.dir, touches: e.files.slice(0, TOUCH_LIMIT) }));
+  // The repo it was saved from first; a folder of repos only when nothing else was touched.
+  out.sort((a, b) => Number(repoPlace(b.dir).key === here.key) - Number(repoPlace(a.dir).key === here.key));
+  const touched = out.filter((t) => t.touches.length > 0);
+  if (!here.git && touched.length > 0) return touched;
+  return out.length ? out : [{ dir: here.checkout, touches: [] }];
 }
 
 /* -------------------------------------------------------------------------- */
@@ -321,7 +347,7 @@ export function formatNoteHits(hits: NoteHit[]): string[] {
       if (lead) lines.push(`  ${s.label.padEnd(11)} ${clip(lead)}`);
     }
     const cost = costLabel(note.cost);
-    lines.push(`  ${note.path}${cost ? ` · ${cost}` : ""}`);
+    lines.push(`  ${shownPath(note.path)}${cost ? ` · ${cost}` : ""}`);
     lines.push("");
   }
   return lines;

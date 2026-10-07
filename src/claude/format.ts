@@ -33,8 +33,8 @@ export function renderStatusline(
   }
   const top = [C.muted('◤ ') + C.indigo(brand()), C.text(`${stats.nodeCount} nodes / ${stats.edgeCount} edges`)];
   top.push(freshnessSegment(stats));
-  // The team's notes, so a session that starts with some knows they're there.
-  if (ctx.notes) top.push(C.amber(`${ctx.notes} note${ctx.notes === 1 ? '' : 's'} in .trail/`));
+  // Past sessions' notes, so a session that starts with some knows they're there.
+  if (ctx.notes) top.push(C.amber(`${ctx.notes} note${ctx.notes === 1 ? '' : 's'}`));
   const saved = session?.savedTokens ?? 0;
   if (saved > 0) {
     // Dollars only once a turn has actually been billed — see context/price.ts.
@@ -211,7 +211,7 @@ export function relevantRetrieval(ask: AskJson, s: SessionState, cap = 3): strin
   return txt;
 }
 
-export function formatOrientation(indexMd: string, budgetBytes = 1500, staleNote?: string, notes = 0): string {
+export function formatOrientation(indexMd: string, budgetBytes = 1500, staleNote?: string, notes = 0, keepsNotes = notes > 0): string {
   // Always-on directive (cached, seen turn 0) so the agent reaches for graft's
   // commands without waiting for the discretionary skill to load. This is the
   // reliable steering channel (fires every session, unlike the discretionary
@@ -231,22 +231,27 @@ export function formatOrientation(indexMd: string, budgetBytes = 1500, staleNote
     `  Already know the file or symbol to change? Go straight to it: ${cmd('graft grep')} "<symbol>", read the span, edit. Save ask for when you don't yet know where the code lives.\n` +
     `  Refactor, rename, or multi-file change? Run ${cmd('graft callers')} <sym> --depth all FIRST to map every connected file; editing the primary file and stopping is the classic miss (platform siblings, a new file to extract).\n` +
     `Each tool opens its output with a "${tag()} tokens saved ≈ N" line, sometimes with its dollar value; when you used ${b} this turn, close your reply with a one-line tally of the total saved, dollars included when given (e.g. 🌱 ${b} saved ~12k tokens (~$0.04) this turn, 3 calls). Never price tokens yourself; never pipe ${b} through head/tail — it is already capped, and clipping drops that line.\n` +
-    teamNotesDirective(notes);
+    teamNotesDirective(notes, keepsNotes);
   const banner = staleNote ? `${staleNote}\n\n` : "";
   return `${banner}${directive}\nrepo map (graft/INDEX.md):\n${indexMd.slice(0, budgetBytes)}`;
 }
 
 /**
- * The paragraph about `.trail/`, for a repo whose team keeps notes there:
- * read them first, credit them in the tally, and leave one when done. Empty
- * for a repo with none, so graft's directive is unchanged everywhere else.
+ * The paragraph about notes, for a repo that keeps them on this machine
+ * (`kept`): read the ones there are first, credit them in the tally, and
+ * leave one when done. Empty for a repo that keeps none, so graft's directive
+ * is unchanged everywhere else.
  */
-export function teamNotesDirective(notes: number): string {
-  if (notes <= 0) return '';
+export function teamNotesDirective(notes: number, kept = notes > 0): string {
+  if (!kept) return '';
+  const read =
+    notes > 0
+      ? `This repo has ${notes} note${notes === 1 ? '' : 's'} from past sessions on what was decided, tried and ruled out. \`${cmd('graft ask')}\` puts the ones that bear on a task above the code; read them before exploring. ` +
+        `When a note saved you work, add to your tally how much of it came from that note, using the cost printed with it (e.g. ~9k tokens and ~12 min of it came from Priya's note on bbox rotation).\n`
+      : '';
   return (
-    `Teammates have left ${notes} note${notes === 1 ? '' : 's'} in .trail/ on what they decided, tried and ruled out. \`${cmd('graft ask')}\` puts the ones that bear on a task above the code; read them before exploring. ` +
-    `When a note saved you work, add to your tally how much of it came from that note, using the cost printed with it (e.g. ~9k tokens and ~12 min of it came from Priya's note on bbox rotation).\n` +
-    `When you finish a task that took real digging, leave a note for the next person: \`${cmd('graft note')} --title "<what it was about>"\` with the note on stdin, under ## Decided, ## Tried and ruled out and ## Watch out. A summary, never a transcript, and nothing secret: it gets committed.\n`
+    read +
+    `When you finish a task that took real digging, leave a note for the next session: \`${cmd('graft note')} --title "<what it was about>"\` with the note on stdin, under ## Decided, ## Tried and ruled out and ## Watch out. A summary, never a transcript, and nothing secret. It stays on this machine until its owner shares it.\n`
   );
 }
 

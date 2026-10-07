@@ -36,9 +36,9 @@ export function currentBranch(repo: string): string | undefined {
   return b && b !== "HEAD" ? b : undefined;
 }
 
-/** Paths that are trail's own or agent wiring, never what a note is about. */
-function ownPath(p: string): boolean {
-  return /^(\.trail|graft|\.graft|\.claude|\.cursor|\.codex)(\/|$)/.test(p) || p === ".mcp.json";
+/** Paths that are the code map or agent wiring, never what a note is about. */
+export function ownPath(p: string): boolean {
+  return /^(graft|\.graft|\.claude|\.cursor|\.codex)(\/|$)/.test(p) || p === ".mcp.json";
 }
 
 /**

@@ -74,7 +74,7 @@ export const EVENTS: Record<string, ReadonlySet<string>> = {
    *  `skipped` with a `reason` from a closed set (TRAIL_AUTOPUSH_SKIPS). Only for
    *  a repo with a trail attached — every other repo sends nothing. */
   trail_autopush: new Set<string>(['outcome', 'reason']),
-  /** `trail note` saved a session note into `.trail/notes/`. Whether it carries
+  /** `trail note` saved a session note (into `~/.trail/`). Whether it carries
    *  a cost, and how many files it is about, as a bucket. The title, the text
    *  and the paths never travel. The supply side of the notes loop; the
    *  `notes` property on `query` is the demand side. */

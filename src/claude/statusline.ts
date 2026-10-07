@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 import { renderStatusline, renderSubagent } from './format.js';
 import { readStats, readSession, emptyStats, type Stats } from './state.js';
 import { readWiring, computeStats } from './stats.js';
-import { adoptRepoBrand, noteCount } from '../brand.js';
+import { adoptRepoBrand } from '../brand.js';
+import { noteCount } from '../notes/home.js';
 
 /**
  * The statusline's fast path is the hook-maintained cache (graft/.cache/stats.json).

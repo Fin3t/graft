@@ -16,15 +16,17 @@
  * gap of more than ten minutes between two entries counts as nothing, so a
  * session left open over lunch doesn't claim the lunch.
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 export interface SessionCost {
   minutes: number;
   tokens: number;
   /** When the counted stretch began, epoch ms. */
   startedAt: number;
+  /** Files the agent edited or wrote in that stretch, absolute, in order. */
+  edited: string[];
 }
 
 const IDLE_MS = 10 * 60 * 1000;
@@ -35,9 +37,23 @@ export function claudeProjectDir(repo: string, home: string = homedir()): string
   return join(home, ".claude", "projects", repo.replace(/[^A-Za-z0-9]/g, "-"));
 }
 
+/**
+ * The project folder of the session that `dir` is part of: `dir`'s own, or
+ * the nearest ancestor's. A note saved from a subfolder, or from one repo of
+ * a session started in the folder above several, still finds its session.
+ */
+function sessionProjectDir(dir: string, home?: string): string | null {
+  for (let d = resolve(dir); ; d = dirname(d)) {
+    const p = claudeProjectDir(d, home);
+    if (existsSync(p)) return p;
+    if (dirname(d) === d) return null;
+  }
+}
+
 /** The transcript of the session running in `repo` now, or null. */
 export function currentTranscript(repo: string, home?: string, now = Date.now()): string | null {
-  const dir = claudeProjectDir(repo, home);
+  const dir = sessionProjectDir(repo, home);
+  if (!dir) return null;
   let best: { path: string; mtime: number } | null = null;
   let files: string[];
   try {
@@ -71,6 +87,9 @@ function blocks(e: Entry): Array<Record<string, unknown>> {
   return Array.isArray(c) ? (c as Array<Record<string, unknown>>) : [];
 }
 
+/** Claude Code's tools that change a file, each naming it in `file_path` (`notebook_path` for notebooks). */
+const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
+
 const NOTE_CALL = /(^|[|&;]\s*|\s)(npx\s+(-y\s+)?(@trailhq\/|@nanonets\/)?)?(trail|graft)\s+note\b/;
 
 /**
@@ -103,7 +122,8 @@ export function costFromTranscript(text: string, now = Date.now()): SessionCost 
     }
   });
 
-  const counted = entries.slice(boundary + 1).filter((e) => e.timestamp);
+  const after = entries.slice(boundary + 1);
+  const counted = after.filter((e) => e.timestamp);
   if (counted.length === 0) return null;
   const times = counted.map((e) => Date.parse(e.timestamp!)).filter((t) => Number.isFinite(t));
   if (times.length === 0) return null;
@@ -128,7 +148,16 @@ export function costFromTranscript(text: string, now = Date.now()): SessionCost 
     const u = e.message.usage;
     tokens += (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.output_tokens ?? 0);
   }
-  return { minutes: Math.max(1, Math.round(activeMs / 60_000)), tokens, startedAt: times[0]! };
+  const edited: string[] = [];
+  for (const e of after) {
+    for (const b of blocks(e)) {
+      if (b.type !== "tool_use" || !EDIT_TOOLS.has(String(b.name))) continue;
+      const input = (b.input ?? {}) as { file_path?: unknown; notebook_path?: unknown };
+      const file = typeof input.file_path === "string" ? input.file_path : input.notebook_path;
+      if (typeof file === "string" && file && !edited.includes(file)) edited.push(file);
+    }
+  }
+  return { minutes: Math.max(1, Math.round(activeMs / 60_000)), tokens, startedAt: times[0]!, edited };
 }
 
 /** The running session's cost in `repo`, or null when there is no transcript to read. */
