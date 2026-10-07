@@ -28,19 +28,22 @@ import { join } from "node:path";
 import { contentHash } from "../util/id.js";
 import { relPosix } from "../util/paths.js";
 import { readSourceFile } from "../util/source.js";
-import { readFollowNestedRepos, readFollowSubmodules, readIncludeDirs } from "../util/state.js";
+import { readFollowNestedRepos, readFollowSubmodules, readIncludeDirs, readJson, writeJsonAtomic } from "../util/state.js";
 import {
   compactEdges,
   emptyExtractCache,
   expandEdges,
+  pruneSidecars,
   readExtractCache,
+  stampedCachePath,
   writeExtractCache,
   type ExtractEntry,
 } from "./extract-cache.js";
 import { priorHasMeaning, writeFingerprint } from "./fingerprint.js";
 import { seedGraph, type SeedResult } from "./seed.js";
 import { filterByOnlyDirs, listSourceStats } from "./source-files.js";
-import { resolveEdges, type GoModule } from "./resolve.js";
+import { resolveEdges, type GoModule, type ResolveOptions } from "./resolve.js";
+import type { CsResolveMemo } from "./csharp-resolve.js";
 import { enrichGraph, type EnrichStats } from "./enrich.js";
 import { readGraph, writeGraph, wiringPath } from "./write.js";
 import { writeCards, writeIndex, writeCovers, type CardStats } from "./cards.js";
@@ -168,9 +171,8 @@ function executeMethodTargets(sources: Map<string, string>): Array<{ method: str
   return out;
 }
 
-/** Above this size a file can only be a Unity YAML asset (code is capped at 1 MB by
- * the walk); see the stat-trusted replay in {@link buildGraph}. */
-const LARGE_ASSET_BYTES = 1_000_000;
+/** `.cache/csresolve.<stamp>.json`: the C# edge pass's replay memo. */
+const CS_MEMO_PREFIX = "csresolve";
 
 export async function buildGraph(
   dir: string,
@@ -261,17 +263,18 @@ export async function buildGraph(
     // may decide whether a *query* bothers rebuilding; it may not decide what the
     // rebuild itself looks at. Reading is ~0.05ms/file against the ~4.6ms parse
     // this still skips.
-    // One measured exception to "every file is read, every build": a multi-megabyte
-    // Unity asset (a level scene, a font atlas — code never exceeds the 1 MB walk
-    // limit) whose size and mtime match its record, and whose mtime is safely older
-    // than this build (so the coarse-mtime same-second edit cannot hide in it), is
-    // replayed without reading. Re-hashing ~90 MB of YAML was the largest cost of
-    // every auto-sync in a Unity project. `graft check` still hashes everything.
+    // One measured exception to "every file is read, every build": a Unity asset
+    // (scene, prefab, `.meta`, material, …; not shaders, which are code) whose size
+    // and mtime match its record, and whose mtime is safely older than this build
+    // (so the coarse-mtime same-second edit cannot hide in it), is replayed without
+    // reading. Re-hashing ~80 MB of YAML in thousands of files was the largest cost
+    // of every auto-sync in a Unity project. `graft check` still hashes everything.
     if (
       cached &&
       cached.hash &&
       !cached.error &&
-      f.size > LARGE_ASSET_BYTES &&
+      unity &&
+      !keepSource &&
       cached.size === f.size &&
       cached.mtimeMs === f.mtimeMs &&
       f.mtimeMs < buildStartMs - 2000
@@ -362,13 +365,30 @@ export async function buildGraph(
   });
 
   const unityProject = [...facts.values()].some((x) => x.unity);
+  // The C# edge pass replays unchanged files while no declaration changed.
+  const csMemoPath = [...facts.values()].some((x) => x.cs) ? stampedCachePath(outDir, CS_MEMO_PREFIX) : null;
+  const csMemo: ResolveOptions["csMemo"] = csMemoPath
+    ? {
+        hashes: new Map(Object.entries(entries).map(([rel, e]) => [rel, e.hash])),
+        prior: opts.reuse === false ? null : readJson<CsResolveMemo>(csMemoPath),
+      }
+    : undefined;
   const edges = resolveEdges(nodes, rawEdges, {
     goModules: readGoModules(root, repoFiles),
     facts,
     ...(unityProject
       ? { unity: { packages: loadPackageIndex(root, join(outDir, CACHE_DIR)), executeMethods: executeMethodTargets(sources) } }
       : {}),
+    ...(csMemo ? { csMemo } : {}),
   });
+  if (csMemoPath && csMemo?.next) {
+    try {
+      writeJsonAtomic(csMemoPath, csMemo.next, true);
+      pruneSidecars(join(outDir, CACHE_DIR), CS_MEMO_PREFIX);
+    } catch {
+      /* a cache: costs the next sync its replay, never correctness */
+    }
+  }
 
   // Guard 5 (minimum-substance): node counts aren't known until nodes are
   // assembled, so the merge-tiny-scopes-into-root guard runs here.

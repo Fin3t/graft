@@ -75,8 +75,13 @@ export interface ExtractCache {
  * Null stamp → null path → no memo at all. See {@link extractorStamp}.
  */
 export function extractCachePath(outDir: string): string | null {
+  return stampedCachePath(outDir, EXTRACT_CACHE_PREFIX);
+}
+
+/** `<outDir>/.cache/<prefix>.<stamp>.json`: a sidecar keyed like the extract memo. */
+export function stampedCachePath(outDir: string, prefix: string): string | null {
   const stamp = extractorStamp();
-  return stamp === null ? null : join(outDir, CACHE_DIR, `${EXTRACT_CACHE_PREFIX}.${stamp}.json`);
+  return stamp === null ? null : join(outDir, CACHE_DIR, `${prefix}.${stamp}.json`);
 }
 
 /** Keep `.cache/` from growing a file per version forever: after writing, drop all

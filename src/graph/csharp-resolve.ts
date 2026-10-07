@@ -23,6 +23,7 @@ import type { EdgeV1, Kind, NodeV1, Relation } from "./types.js";
 import type { RawEdge } from "./extract.js";
 import { PREDEFINED, type CsFacts, type CsMemberFact, type CsScope, type CsTypeFact, type Expr } from "./csharp.js";
 import { apiData, type ApiData, type ApiMember, type ApiType } from "./cs-api.js";
+import { contentHash } from "../util/id.js";
 
 // ── Type syntax ─────────────────────────────────────────────────────────────
 
@@ -234,6 +235,29 @@ export interface CsResolveResult {
   model: CsModel;
 }
 
+/** One `add` the edge pass made for a file's intents: source, target, relation,
+ * inferred (1) or extracted (0), via. Ids under the file are stored as `#…`. */
+type CsAdd = [string, string, Relation, 0 | 1, string?];
+
+/** The edge pass's per-file output from a previous run. While every declaration
+ * (all files' facts) and the API surface are unchanged, a file's intents resolve
+ * to the same additions, so an unchanged file replays them instead of evaluating
+ * its expressions again — the common auto-sync after a method-body edit. */
+export interface CsResolveMemo {
+  key: string;
+  files: Record<string, { h: string; a: CsAdd[] }>;
+}
+
+export interface CsMemoIO {
+  /** content hash per file (the extract cache's) */
+  hashes: Map<string, string>;
+  /** identity of the API data, package types included */
+  apiKey: string;
+  prior: CsResolveMemo | null;
+  /** set by {@link resolveCSharp}: the memo to persist for the next run */
+  next?: CsResolveMemo;
+}
+
 function apiKey(fqn: string, arity: number): string {
   return arity ? `${fqn}\`${arity}` : fqn;
 }
@@ -248,6 +272,7 @@ export function resolveCSharp(
   rawEdges: RawEdge[],
   factsByFile: Map<string, CsFacts>,
   api: ApiData = apiData(),
+  memo?: CsMemoIO,
 ): CsResolveResult {
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
   // ── index types ──
@@ -1147,7 +1172,11 @@ export function resolveCSharp(
   // ── edges ──
   const out: EdgeV1[] = [];
   const seenEdge = new Map<string, EdgeV1>();
+  let log: CsAdd[] | null = null; // the current file's additions, while recording a memo
+  let logFile = "";
+  const short = (id: string) => (id.startsWith(`${logFile}#`) ? id.slice(logFile.length) : id);
   const add = (source: string, target: string, relation: Relation, confidence: EdgeV1["confidence"], via?: string) => {
+    if (log) log.push(via ? [short(source), short(target), relation, confidence === "inferred" ? 1 : 0, via] : [short(source), short(target), relation, confidence === "inferred" ? 1 : 0]);
     if (!source || !target) return;
     if (relation !== "calls" && source === target) return;
     const key = `${source}\0${relation}\0${target}`;
@@ -1174,7 +1203,47 @@ export function resolveCSharp(
     return acc;
   };
 
+  // Memo: valid while no declaration and no API type changed. Requires each file's
+  // raw edges to be contiguous (as the build emits them), or replay would reorder.
+  let memoKey = "";
+  const nextFiles: CsResolveMemo["files"] = {};
+  if (memo) {
+    const ended = new Set<string>();
+    let prevFile: string | undefined;
+    for (const e of rawEdges) {
+      if (e.file === prevFile) continue;
+      if (ended.has(e.file)) {
+        memo = undefined;
+        break;
+      }
+      if (prevFile !== undefined) ended.add(prevFile);
+      prevFile = e.file;
+    }
+  }
+  if (memo) memoKey = contentHash(JSON.stringify(["v1", memo.apiKey, files.map((f) => [f, factsByFile.get(f)])]));
+  const priorFiles = memo?.prior?.key === memoKey ? memo.prior.files : null;
+  let curFile: string | undefined;
+  let replayed = false;
   for (const e of rawEdges) {
+    if (memo && e.file !== curFile) {
+      curFile = logFile = e.file;
+      log = null;
+      replayed = false;
+      const h = memo.hashes.get(e.file);
+      if (h !== undefined && factsByFile.has(e.file)) {
+        const prev = priorFiles?.[e.file];
+        if (prev && prev.h === h) {
+          const full = (id: string) => (id.startsWith("#") ? e.file + id : id);
+          for (const [s, t, r, c, via] of prev.a) add(full(s), full(t), r, c ? "inferred" : "extracted", via);
+          nextFiles[e.file] = prev;
+          replayed = true;
+        } else {
+          log = [];
+          nextFiles[e.file] = { h, a: log };
+        }
+      }
+    }
+    if (replayed) continue;
     const cs = e.cs;
     if (!cs && !(e.targetId && e.relation !== "contains" && factsByFile.has(e.file))) continue;
     if (!cs) {
@@ -1262,6 +1331,8 @@ export function resolveCSharp(
       continue;
     }
   }
+  log = null;
+  if (memo) memo.next = { key: memoKey, files: nextFiles };
 
   // Extension methods hang on the type they extend (`this Walker w` → Walker).
   for (const list of extensions.values()) {

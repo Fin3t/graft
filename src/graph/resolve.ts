@@ -17,7 +17,8 @@ import { toPosixPath } from "../util/paths.js";
 import type { EdgeV1, Kind, NodeV1, Relation } from "./types.js";
 import { languageOf, type FileFacts, type RawEdge } from "./extract.js";
 import { genericLangOf } from "./generic.js";
-import { resolveCSharp } from "./csharp-resolve.js";
+import { resolveCSharp, type CsMemoIO } from "./csharp-resolve.js";
+import { contentHash } from "../util/id.js";
 import type { CsFacts } from "./csharp.js";
 import { resolveUnity, type UnityResolveOptions } from "./unity-resolve.js";
 import { packageApiTypes } from "./unity-packages.js";
@@ -105,6 +106,8 @@ export interface ResolveOptions {
   facts?: Map<string, FileFacts>;
   /** Project-level inputs for the Unity layer (package GUIDs, -executeMethod targets). */
   unity?: UnityResolveOptions;
+  /** Replay memo for the C# edge pass; `apiKey` is filled in here. */
+  csMemo?: Omit<CsMemoIO, "apiKey">;
 }
 
 export function resolveEdges(
@@ -227,7 +230,12 @@ export function resolveEdges(
   let api = apiData();
   const pkgTypes = opts.unity?.packages ? packageApiTypes(opts.unity.packages, api.types) : null;
   if (pkgTypes && Object.keys(pkgTypes).length) api = { ...api, types: { ...pkgTypes, ...api.types } };
-  const cs = csFacts.size ? resolveCSharp(nodes, rawEdges, csFacts, api) : null;
+  const memo: CsMemoIO | undefined = opts.csMemo && {
+    ...opts.csMemo,
+    apiKey: `${api.source}|${Object.keys(api.types).length}|${contentHash(JSON.stringify(pkgTypes ?? {}))}`,
+  };
+  const cs = csFacts.size ? resolveCSharp(nodes, rawEdges, csFacts, api, memo) : null;
+  if (opts.csMemo && memo?.next) opts.csMemo.next = memo.next;
   if (cs) merge(cs.edges);
   // Unity assets: GUIDs, scripts, UnityEvents, strings in code. May mint nodes
   // (binary assets, package assets) into `nodes` and stamp engine entry points.

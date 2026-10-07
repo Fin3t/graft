@@ -10,7 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -231,14 +231,32 @@ test("Unity: an incremental build equals a cold one (resolver enrichment never a
   cpSync(FIXTURE, dir, { recursive: true });
   spawnSync("git", ["init", "-q"], { cwd: dir });
   await buildGraph(dir, { contextDir: join(dir, "graft") });
+  const memoKey = () => {
+    const cache = join(dir, "graft", ".cache");
+    const f = readdirSync(cache).find((x) => x.startsWith("csresolve."));
+    return f ? (JSON.parse(readFileSync(join(cache, f), "utf8")) as { key: string }).key : null;
+  };
+  const key0 = memoKey();
+  assert.ok(key0, "the C# edge pass leaves a replay memo");
   const spawner = join(dir, "Assets/Scripts/Spawner.cs");
+  const same = async (what: string) => {
+    rmSync(join(dir, "cold"), { recursive: true, force: true });
+    await buildGraph(dir, { contextDir: join(dir, "cold"), reuse: false });
+    const a = readFileSync(wiringPath(join(dir, "graft")), "utf8");
+    const b = readFileSync(wiringPath(join(dir, "cold")), "utf8");
+    assert.equal(a, b, what);
+  };
+  // a body edit: declarations unchanged → the other C# files replay their edges
   writeFileSync(spawner, readFileSync(spawner, "utf8").replace("void Later() { }", "void Later() { SendMessage(\"OnHit\"); }"));
   const inc = await buildGraph(dir, { contextDir: join(dir, "graft") });
   assert.ok(inc.reused > 0 && inc.parsed >= 1, `incremental: parsed ${inc.parsed}, reused ${inc.reused}`);
-  await buildGraph(dir, { contextDir: join(dir, "cold"), reuse: false });
-  const a = readFileSync(wiringPath(join(dir, "graft")), "utf8");
-  const b = readFileSync(wiringPath(join(dir, "cold")), "utf8");
-  assert.equal(a, b);
+  assert.equal(memoKey(), key0, "a body edit keeps the declaration key (replay path)");
+  await same("after a body edit");
+  // a declaration edit: everything resolves again
+  writeFileSync(spawner, readFileSync(spawner, "utf8").replace("void Later()", "public void Tick() { }\n  void Later()"));
+  await buildGraph(dir, { contextDir: join(dir, "graft") });
+  assert.notEqual(memoKey(), key0, "a new member changes the declaration key");
+  await same("after a declaration edit");
 });
 
 test("Unity: graph invariants hold", async () => {
