@@ -166,8 +166,8 @@ program
   .name(brand())
   .description(
     TRAIL
-      ? "Your team's shared memory for coding agents: a code map on your machine, and\n" +
-          "the notes, decisions and skills your whole team shares."
+      ? "Memory for your coding agents: a code map, and the notes and skills each\n" +
+          "session leaves on your machine, shared with your team when you sign in."
       : "Build a repo's context graph as linked markdown, and keep it in sync with the code.",
   )
   .version(currentVersion, "-v, --version")
@@ -2060,24 +2060,6 @@ function loginCommand(name = "login"): Command {
     });
 }
 
-/** Files ending in `ext` directly under `dir`, or 0 when it doesn't exist. */
-function countFiles(dir: string, ext: string): number {
-  try {
-    return readdirSync(dir).filter((f) => f.endsWith(ext)).length;
-  } catch {
-    return 0;
-  }
-}
-
-/** Directories directly under `dir`, or 0 when it doesn't exist. */
-function countDirs(dir: string): number {
-  try {
-    return readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).length;
-  } catch {
-    return 0;
-  }
-}
-
 /** Tokens saved by this repo's agent sessions touched in the last 7 days. */
 function savedThisWeek(repo: string, now = Date.now()): number {
   const since = now - 7 * 24 * 60 * 60 * 1000;
@@ -2102,9 +2084,8 @@ function shortCount(n: number): string {
 
 /**
  * `trail status`: what was `graft stats` and `graft trail status`, on one
- * screen. The code map and whether it matches the code, the team's notes and
- * skills in .trail/, the Trail link and how many of its rules still match, and
- * what the agents saved this week.
+ * screen. The code map and whether it matches the code, the Trail link and
+ * how many of its rules still match, and what the agents saved this week.
  */
 function statusCommand(name = "status"): Command {
   return new Command(name)
@@ -2116,10 +2097,6 @@ function statusCommand(name = "status"): Command {
       const graph = loadGraphCached(contextDirFor(repo, program.opts<GlobalOpts>().dir));
       const g = graph ? await engineFrom().checkGraph(repo) : null;
       const fresh = g && !g.missing ? g.ok : null;
-      const trailDir = join(repo, ".trail");
-      const hasTrailDir = existsSync(trailDir);
-      const notes = countFiles(join(trailDir, "notes"), ".md");
-      const skills = countDirs(join(trailDir, "skills"));
       const { link, rules } = brainStatus(repo);
       const anchored = link && graph ? rulesForPointers(graph.nodes.map((n) => `${n.path}:${n.span}`), rules, graph) : [];
       const matching = anchored.filter((a) => !a.stale).length;
@@ -2130,7 +2107,6 @@ function statusCommand(name = "status"): Command {
           JSON.stringify(
             {
               codeMap: graph ? { nodes: graph.meta.nodeCount, inSync: fresh } : null,
-              trail: hasTrailDir ? { notes, skills } : null,
               cloud: link ? { brainId: link.brainId, cached: rules.length, anchored: anchored.length, matching } : null,
               week: { savedTokens: saved },
             },
@@ -2145,7 +2121,6 @@ function statusCommand(name = "status"): Command {
       if (!graph) row("code map", `✗ not built · run ${cmd("graft build")}`);
       else if (fresh === false) row("code map", `⚠ ${fmt(graph.meta.nodeCount)} nodes · behind the code, refreshed on the next query`);
       else row("code map", `✓ ${fmt(graph.meta.nodeCount)} nodes · in sync with the code`);
-      if (hasTrailDir) row(".trail/", `${notes} note${notes === 1 ? "" : "s"} · ${skills} skill${skills === 1 ? "" : "s"}`);
       if (!link) row("cloud", `not signed in · ${cmd("graft trail connect")}`);
       else
         row(

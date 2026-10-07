@@ -176,20 +176,15 @@ test("trail check says where the freshness check went, and fails so a renamed CI
   assert.match(r.err, /that's trail build --check/);
 });
 
-test("trail status puts the code map, .trail/ and the cloud link on one screen", () => {
+test("trail status puts the code map and the cloud link on one screen", () => {
   const home = scratchHome();
   const d = builtRepo();
   run("trail", ["build", d], home);
-  mkdirSync(join(d, ".trail", "notes"), { recursive: true });
-  writeFileSync(join(d, ".trail", "notes", "2026-10-07-bbox.md"), "# bbox\n");
-  mkdirSync(join(d, ".trail", "skills", "pdf-coords"), { recursive: true });
   const r = run("trail", ["status", d], home);
   assert.equal(r.status, 0, r.err);
   assert.match(r.out, /^code map {4}✓ \d+ nodes · in sync with the code$/m);
-  assert.match(r.out, /^\.trail\/ {5}1 note · 1 skill$/m);
   assert.match(r.out, /^cloud {7}not signed in · trail login$/m);
   const json = JSON.parse(run("trail", ["status", d, "--json"], home).out);
-  assert.deepEqual(json.trail, { notes: 1, skills: 1 });
   assert.equal(json.cloud, null);
 });
 
