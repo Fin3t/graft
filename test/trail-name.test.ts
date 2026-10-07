@@ -225,3 +225,57 @@ test("the savings footer says [trail] under trail and [graft] under graft", () =
     else process.env.TRAIL_INVOKED_AS = before;
   }
 });
+
+// --- MCP: trail's tool names, graft's still answered ---
+
+async function mcpRpc(name: "trail" | "graft", dir: string, messages: object[], expected: number): Promise<any[]> {
+  const { spawn } = await import("node:child_process");
+  const child = spawn(process.execPath, ["--import", "tsx", join(process.cwd(), "src", "bin", `${name}.ts`), "mcp", dir], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, DO_NOT_TRACK: "1", TRAIL_INVOKED_AS: undefined },
+  });
+  const out: any[] = [];
+  let buf = "";
+  child.stdout.on("data", (d) => {
+    buf += d.toString();
+    let i;
+    while ((i = buf.indexOf("\n")) !== -1) {
+      const line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      if (line) out.push(JSON.parse(line));
+    }
+  });
+  for (const m of messages) child.stdin.write(`${JSON.stringify(m)}\n`);
+  const deadline = Date.now() + 20000;
+  while (out.length < expected && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+  child.kill();
+  return out;
+}
+
+test("trail mcp advertises trail_* tools and answers graft_* calls too; graft mcp is unchanged", async () => {
+  const d = builtRepo();
+  run("graft", ["build", d], scratchHome());
+  const init = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "0" } } };
+  const list = { jsonrpc: "2.0", id: 2, method: "tools/list" };
+  const call = (id: number, tool: string) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name: tool, arguments: { query: "beta" } } });
+
+  const t = await mcpRpc("trail", d, [init, list, call(3, "trail_find_code"), call(4, "graft_find_code")], 4);
+  assert.equal(t.find((r) => r.id === 1)?.result.serverInfo.name, "trail");
+  assert.match(t.find((r) => r.id === 1)?.result.instructions, /select:mcp__trail__trail_find_code,/);
+  const names = t.find((r) => r.id === 2)?.result.tools.map((x: { name: string }) => x.name);
+  assert.ok(names.includes("trail_find_code") && !names.some((n: string) => n.startsWith("graft_")), String(names));
+  for (const id of [3, 4]) assert.equal(t.find((r) => r.id === id)?.result.isError, false, `call ${id}`);
+
+  const g = await mcpRpc("graft", d, [init, list], 2);
+  assert.equal(g.find((r) => r.id === 1)?.result.serverInfo.name, "graft");
+  assert.ok(g.find((r) => r.id === 2)?.result.tools.some((x: { name: string }) => x.name === "graft_find_code"));
+});
+
+test("both tool vocabularies count as retrievals", async () => {
+  const { canonicalToolName } = await import("../src/mcp/tool-names.js");
+  const { isGraftMcpTool } = await import("../src/claude/session-metrics.js");
+  assert.equal(canonicalToolName("trail_find_code"), "graft_find_code");
+  assert.equal(canonicalToolName("graft_ask"), "graft_find_code");
+  assert.equal(isGraftMcpTool("mcp__trail__trail_trace_calls"), true);
+  assert.equal(isGraftMcpTool("mcp__graft__graft_find_all"), true);
+});

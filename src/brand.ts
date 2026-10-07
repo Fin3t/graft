@@ -75,6 +75,17 @@ export function cmd(graftSpelling: string, b: Brand = brand()): string {
   return graftSpelling;
 }
 
+/**
+ * Agent-facing prose and tool names in trail's spelling: `graft_find_code` →
+ * `trail_find_code`, and the word graft → trail. A `graft` followed by `/` is
+ * the code map's folder and stays, as do `graft-…` names. Under graft, the
+ * text comes back unchanged.
+ */
+export function inBrand(text: string, b: Brand = brand()): string {
+  if (b === "graft") return text;
+  return text.replace(/\bgraft_(?=[a-z])/g, "trail_").replace(/\bgraft\b(?![/\w-])/g, "trail");
+}
+
 /* -------------------------------------------------------------------------- */
 /* the once-a-day line for people still typing graft                          */
 /* -------------------------------------------------------------------------- */
