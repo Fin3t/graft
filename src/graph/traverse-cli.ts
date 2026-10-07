@@ -42,7 +42,8 @@ export function headerOf(n: NodeV1): string {
   const head = `${n.name} · ${n.kind} · ${n.path}:${n.span}${pkg}${asm}`;
   // Called by the engine / an editor / the test runner rather than by repo code:
   // say so up front, so an empty callers list never reads as dead code.
-  return n.entry ? `${head}\n  ⚙ ${n.entry}` : head;
+  const names = n.names ? `\n  ↳ names ${n.names}` : "";
+  return n.entry ? `${head}\n  ⚙ ${n.entry}${names}` : `${head}${names}`;
 }
 
 /** `showDepth` is set for multi-hop walks (depth > 1), matching the old

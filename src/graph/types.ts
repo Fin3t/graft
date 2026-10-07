@@ -105,6 +105,8 @@ export interface NodeV1 {
   //                 Unity message (`Update`), an `[InitializeOnLoad]`/`[MenuItem]`
   //                 target, an `-executeMethod` target, a test. Set by the resolver,
   //                 so "no indexed callers" is not mistaken for dead code.
+  names?: string; // a constant/field whose value names a project asset by string — a
+  //                 scene, a Resources path — and what it resolves to. Set by the resolver.
   asm?: string; // C# (Unity): the assembly compiling this file/type, "Game.Runtime
   //                 (Assets/Game/Scripts/Game.Runtime.asmdef)". Set by the resolver.
   pkg?: string; // third-party code vendored into the repo (a Unity embedded package

@@ -25,6 +25,8 @@ import { fileURLToPath } from "node:url";
 export interface ApiMember {
   /** Value/return type. */
   t: string;
+  /** Methods: return type of the generic overload (`GetComponent<T>()` → `!!0`). */
+  tg?: string;
   /** m = method, p = property, f = field, e = event, c = constant. */
   k: "m" | "p" | "f" | "e" | "c";
   s?: 1; // static

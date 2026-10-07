@@ -18,6 +18,9 @@ import { buildGraph } from "../src/graph/build.js";
 import { readGraph, wiringPath } from "../src/graph/write.js";
 import { checkGraphInvariants } from "../src/graph/invariants.js";
 import { resolveSymbol, edgeWalk } from "../src/graph/traverse.js";
+import { grepGraph } from "../src/search/grep.js";
+import { formatGrepResult } from "../src/search/grep-cli.js";
+import { headerOf } from "../src/graph/traverse-cli.js";
 import { scanUnityYaml, itemsOf } from "../src/graph/unity-yaml.js";
 import { blankInactiveBranches, evalCondition } from "../src/graph/csharp.js";
 import { typeName } from "../src/graph/unity-resolve.js";
@@ -27,9 +30,10 @@ import { tmpRepo } from "./helpers.js";
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "unity-mini");
 
 let cached: GraphV1 | null = null;
+let repoDir = "";
 async function graph(): Promise<GraphV1> {
   if (cached) return cached;
-  const dir = tmpRepo("unity");
+  const dir = (repoDir = tmpRepo("unity"));
   cpSync(FIXTURE, dir, { recursive: true });
   // a git repo, so Library/ stays out of the index as it does in a real project
   spawnSync("git", ["init", "-q"], { cwd: dir });
@@ -199,6 +203,20 @@ test("Unity: package components resolve to foreign nodes; LayerMasks, build indi
   assert.ok(has(g, "loads", "Spawner.Again", "Assets/Scenes/Level.unity"), "LoadSceneAsync(0) → build index 0");
   assert.ok(has(g, "calls", "Spawner.Again", "Walker.Footstep"), "var (w, n) = Pick() types w");
   assert.equal(g.nodes.some((n) => n.path.startsWith("Library/")), false, "package sources are not indexed");
+});
+
+test("Unity: grep reports engine entries; callers header says what a constant names", async () => {
+  const g = await graph();
+  const r = grepGraph(g, repoDir, "Tools/Build Stuff");
+  assert.ok(r.entries?.some((e) => e.symbol.name === "Builder.BuildStuff"), JSON.stringify(r.entries));
+  assert.match(formatGrepResult(r), /engine entry points matching[\s\S]*BuildStuff · method · Assets\/Editor\/Builder\.cs:L\d+-L\d+ — ⚙ Unity Editor menu "Tools\/Build Stuff"/);
+  // `const string LevelScene = "Level"` feeds LoadScene whole: the constant names the scene
+  const scene = g.nodes.find((n) => short(n.id) === "Spawner.LevelScene")!;
+  assert.equal(scene.names, "Assets/Scenes/Level.unity");
+  assert.match(headerOf(scene), /↳ names Assets\/Scenes\/Level\.unity/);
+  assert.ok(has(g, "references", "Spawner.LevelScene", "Assets/Scenes/Level.unity"));
+  const walker = g.nodes.find((n) => short(n.id) === "Walker")!;
+  assert.match(headerOf(walker), /assembly Game \(Assets\/Scripts\/Game\.asmdef\)/);
 });
 
 test("Unity: graph invariants hold", async () => {

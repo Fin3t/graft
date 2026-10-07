@@ -597,7 +597,10 @@ function extractYamlAsset(rel: string, source: string, o: Out, kind: string): Un
   if (rel === "ProjectSettings/EditorBuildSettings.asset" && main) {
     const scenes = itemsOf(main, "m_Scenes").map((i) => ({ path: i.v.path ?? "", guid: i.v.guid?.toLowerCase(), enabled: i.v.enabled === "1" }));
     asset.scenes = scenes;
-    o.nodes.push(fileNode(rel, source, "EditorBuildSettings (scenes in build)", `build scenes ${scenes.map((s) => s.path).join(" ")}`));
+    // config objects (`com.unity.input.settings.actions` → the project-wide input actions, …)
+    const configs = [...new Set(main.refs.filter((r) => r.path.startsWith("m_configObjects.")).map((r) => r.path.slice("m_configObjects.".length)))];
+    const sig = `EditorBuildSettings (scenes in build: ${scenes.filter((s) => s.enabled).map((s) => s.path).join(", ")}${configs.length ? `; config objects: ${configs.join(", ")}` : ""})`;
+    o.nodes.push(fileNode(rel, source, sig, `${sig} build scenes ${scenes.map((s) => s.path).join(" ")}`));
     let index = 0;
     for (const s of scenes) {
       const via = s.enabled ? `build index ${index++}` : "in build list, disabled";

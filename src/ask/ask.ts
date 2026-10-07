@@ -59,6 +59,9 @@ export interface AskHit {
   snippet: string;
   relation?: Relation;
   related?: string[];
+  /** Unity wiring of a symbol hit: the assets/scenes/shaders it loads or sets by
+   * name (`loads → Assets/…/BossZone.shader`). Absent outside Unity projects. */
+  wiring?: string[];
   score: number;
   /** The actual source at `pointer`, sliced from disk when `source` is on.
    * This is what makes `ask` substitutive — the agent reads the span here
@@ -658,9 +661,25 @@ function lexical(
   const baselineQueueHitsByGroup = new Map<string, () => AskHit[]>();
   const fileGroups: AskRankingGroup[] = [];
   const needsFileQueues = fileComplement && (fileTopLock || includeRankingMetadata);
+  // Code → asset edges by source, for the wiring line under a hit (built once, lazily).
+  let wiringBySource: Map<string, string[]> | null = null;
+  const wiringOf = (id: string): string[] | undefined => {
+    if (!wiringBySource) {
+      wiringBySource = new Map();
+      for (const e of graph?.edges ?? []) {
+        if (e.relation !== "loads" && e.relation !== "sets" && e.relation !== "plays" && e.relation !== "uses_shader") continue;
+        const t = byId.get(e.target);
+        const list = wiringBySource.get(e.source) ?? [];
+        if (list.length < 8) list.push(`${e.relation} → ${t ? (t.kind === "file" || t.kind === "asset" ? t.path : `${t.name} (${t.path})`) : e.target}`);
+        wiringBySource.set(e.source, list);
+      }
+    }
+    return wiringBySource.get(id);
+  };
   const makeSymbolHit = (id: string, hitScore: number, scope?: string): AskHit | null => {
     const n = byId.get(id);
     if (!n) return null;
+    const wiring = wiringOf(id);
     const hit: AskHit = {
       kind: "symbol",
       title: `${n.name} · ${n.kind}`,
@@ -668,6 +687,7 @@ function lexical(
       snippet: `${n.summary?.split("\n")[0].trim() ?? n.signature ?? ""}${n.entry ? ` ⚙ ${n.entry}` : ""}`,
       score: hitScore,
       ...(scope === undefined ? {} : { scope }),
+      ...(wiring ? { wiring } : {}),
     };
     const d = docsById.get(id);
     matchedOf.set(
@@ -1535,6 +1555,7 @@ export function formatAsk(r: AskResult): string {
       lines.push(`   ${h.pointer}`);
       if (h.snippet) lines.push(`   ${h.snippet}`);
       if (h.related?.length) lines.push(`   related: ${h.related.join(", ")}`);
+      if (h.wiring?.length) lines.push(`   ↳ ${h.wiring.join(" · ")}`);
       if (h.code) lines.push("", "```", h.code, "```");
       lines.push("");
     });

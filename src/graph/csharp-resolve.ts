@@ -220,6 +220,8 @@ export interface CsModel {
   membersOf(t: TypeInfo, name: string): MemberInfo[];
   /** Type value of an expression (from a C# or Unity intent). */
   typeOf(file: string, u: number, typeId: string | undefined, sourceId: string, e: Expr): TypeValue | null;
+  /** The member a reference expression names (`PlaygroundDirector.SceneName`). */
+  memberOf(file: string, u: number, typeId: string | undefined, sourceId: string, e: Expr): MemberInfo | null;
   /** Possible string values of a constant reference, when statically known. */
   constValues(file: string, u: number, typeId: string | undefined, sourceId: string, e: Expr): { values: string[]; hash?: "anim" | "prop" } | null;
   fqnOf(tv: TypeValue): string;
@@ -698,7 +700,7 @@ export function resolveCSharp(
     if (!f.api) return null;
     const owner = f.api.owner;
     const sub = genericMap(owner.api?.g ?? [], ownerApiArgs(f.via, owner));
-    return resolveApiType(f.api.m.t, sub, targs);
+    return resolveApiType(targs.length && f.api.m.tg ? f.api.m.tg : f.api.m.t, sub, targs);
   }
 
   /** Generic args of an API owner type as reached from `via`. */
@@ -1300,6 +1302,13 @@ export function resolveCSharp(
       called = [];
       const s = evalExpr(scopeOfIntent(file, u, typeId, sourceId), e);
       return s?.k === "val" || s?.k === "type" ? s.tv : null;
+    },
+    memberOf(file, u, typeId, sourceId, e) {
+      if (!factsByFile.has(file)) return null;
+      refsOut.length = 0;
+      called = [];
+      const s = evalExpr(scopeOfIntent(file, u, typeId, sourceId), e);
+      return s?.k === "val" ? (s.member ?? null) : null;
     },
     constValues(file, u, typeId, sourceId, e) {
       if (!factsByFile.has(file)) return null;

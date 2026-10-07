@@ -20,6 +20,8 @@ import { genericLangOf } from "./generic.js";
 import { resolveCSharp } from "./csharp-resolve.js";
 import type { CsFacts } from "./csharp.js";
 import { resolveUnity, type UnityResolveOptions } from "./unity-resolve.js";
+import { packageApiTypes } from "./unity-packages.js";
+import { apiData } from "./cs-api.js";
 
 const IMPORT_EXTS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".py"];
 /** C/C++ source + header extensions, for resolving `#include` targets. */
@@ -220,7 +222,12 @@ export function resolveEdges(
       out.push(e);
     }
   };
-  const cs = csFacts.size ? resolveCSharp(nodes, rawEdges, csFacts) : null;
+  // Package sources (Library/PackageCache) name external types the API data lacks
+  // (uGUI's Selectable, EventSystems handlers, Input System types): add them.
+  let api = apiData();
+  const pkgTypes = opts.unity?.packages ? packageApiTypes(opts.unity.packages, api.types) : null;
+  if (pkgTypes && Object.keys(pkgTypes).length) api = { ...api, types: { ...pkgTypes, ...api.types } };
+  const cs = csFacts.size ? resolveCSharp(nodes, rawEdges, csFacts, api) : null;
   if (cs) merge(cs.edges);
   // Unity assets: GUIDs, scripts, UnityEvents, strings in code. May mint nodes
   // (binary assets, package assets) into `nodes` and stamp engine entry points.

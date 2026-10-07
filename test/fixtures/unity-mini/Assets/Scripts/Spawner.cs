@@ -7,6 +7,7 @@ namespace Game
         [SerializeField] private GameObject walkerPrefab;
         private static readonly int AttackId = Animator.StringToHash("Attack");
         private const string IconFolder = "Icons/";
+        public const string LevelScene = "Level";
 
         void Start()
         {
@@ -23,7 +24,7 @@ namespace Game
             SendMessage("Footstep");
         }
         void Later() { }
-        void Again() { SceneManager.LoadSceneAsync(0); var (w, n) = Pick(); w.Footstep(); }
+        void Again() { SceneManager.LoadSceneAsync(0); SceneManager.LoadScene(LevelScene); var (w, n) = Pick(); w.Footstep(); }
         (Walker, int) Pick() => (null, 0);
     }
 }

@@ -94,6 +94,8 @@ export function resolveUnity(
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const out: EdgeV1[] = [];
   const seen = new Map<string, EdgeV1>();
+  // `addEdge` is the plain adder; resolveCodeString shadows `add` to credit constants.
+  const namesOf = new Map<string, Set<string>>(); // constant → what its string names
   const add = (source: string, target: string, relation: Relation, confidence: EdgeV1["confidence"] = "extracted", via?: string) => {
     if (!source || !target || source === target) return;
     if (!byId.has(source)) return;
@@ -108,6 +110,7 @@ export function resolveUnity(
     seen.set(key, e);
     out.push(e);
   };
+  const addEdge = add;
 
   // ── indexes ──
   const guidToPath = new Map<string, string>();
@@ -538,8 +541,30 @@ export function resolveUnity(
     return hits.length <= 8 ? hits : [];
   }
 
-  function resolveCodeString(e: RawEdge, u: CsUnityIntent): void {
+  function resolveCodeString(e: RawEdge, u0: CsUnityIntent): void {
+    const u = u0;
     const op = u.op;
+    // A string that comes whole from one constant (`LoadScene(SceneName)`): the
+    // constant names the target too — callers of it should see what it names.
+    const carrier = (() => {
+      const first = u.args[0];
+      if (!cs || !first || first.length !== 1 || first[0].length !== 1) return null;
+      const part = first[0][0];
+      if (!Array.isArray(part)) return null;
+      const m = cs.memberOf(e.file, u.u, u.ty, e.source, part[1]);
+      return m?.fact.id && m.fact.id !== e.source ? m.fact.id : null;
+    })();
+    const add = (source: string, target: string, relation: Relation, confidence: EdgeV1["confidence"] = "extracted", via?: string) => {
+      addEdge(source, target, relation, confidence, via);
+      if (carrier && source === e.source && (relation === "loads" || relation === "plays" || relation === "sets")) {
+        addEdge(carrier, target, "references", confidence, via);
+        const t = byId.get(target);
+        const label = t ? (t.kind === "file" || t.kind === "asset" ? t.path : `${t.name} (${t.path})`) : target;
+        const set = namesOf.get(carrier) ?? new Set<string>();
+        set.add(label);
+        namesOf.set(carrier, set);
+      }
+    };
     const { fqn, name: recvName } = recvInfo(e);
     const recvShort = (fqn ?? recvName ?? "").split(".").pop() ?? "";
     const via = (v: StrOut) => (/^#\d+$/.test(v.s) ? `build index ${v.s.slice(1)}` : `"${v.s}${v.open ? "…" : ""}"`);
@@ -579,7 +604,7 @@ export function resolveUnity(
       case "ImportAsset":
       case "AssetPathToGUID":
         each(0, (v) => {
-          if (!/^(Assets|Packages)\//.test(v.s)) return;
+          if (!/^(Assets|Packages|ProjectSettings)\//.test(v.s)) return;
           for (const t of pathTargets(v)) add(e.source, t, "loads", "extracted", `${recvShort || "AssetDatabase"}.${op}(${via(v)})`);
         });
         return;
@@ -832,6 +857,12 @@ export function resolveUnity(
       asmOf.set(f, `${name} (no asmdef)`);
     }
   }
+  // one answer to "which scripts have no asmdef": the runtime node names the editor ones too
+  const rt = byId.get("Assets#Assembly-CSharp");
+  if (rt && unowned.editor.length) {
+    rt.signature = `${rt.signature} · Editor-folder scripts → Assembly-CSharp-Editor: ${unowned.editor.slice(0, 12).join(", ")}`;
+    rt.body_text = `${rt.body_text} ${unowned.editor.join(" ")}`;
+  }
   for (const n of nodes) {
     if (n.kind === "file" || n.kind === "class" || n.kind === "struct" || n.kind === "interface" || n.kind === "enum" || n.kind === "type") {
       const a = asmOf.get(n.path);
@@ -925,7 +956,10 @@ export function resolveUnity(
       // overrides of engine virtuals and engine callback interfaces
       for (const iface of ext.filter((f) => CALLBACK_IFACE.test(f))) {
         const api = cs.api.types[iface];
-        for (const name of Object.keys(api?.m ?? {})) for (const m of t.members.get(name) ?? []) if (m.fact.id) mark(m.fact.id, `${iface.split(".").pop()} callback`);
+        // EventSystems handlers are named after their one method: IPointerClickHandler → OnPointerClick
+        const handler = /^UnityEngine\.EventSystems\.I(\w+)Handler$/.exec(iface)?.[1];
+        const names = [...Object.keys(api?.m ?? {}), ...(handler ? [`On${handler}`] : [])];
+        for (const name of names) for (const m of t.members.get(name) ?? []) if (m.fact.id) mark(m.fact.id, `${iface.split(".").pop()} callback (EventSystem/engine)`);
       }
     }
     for (const e of [...prior, ...out]) {
@@ -966,6 +1000,10 @@ export function resolveUnity(
   for (const [id, whys] of entries) {
     const n = byId.get(id);
     if (n) n.entry = [...whys].sort().join("; ");
+  }
+  for (const [id, set] of namesOf) {
+    const n = byId.get(id);
+    if (n) n.names = [...set].sort().slice(0, 6).join(", ");
   }
   return out;
 }
