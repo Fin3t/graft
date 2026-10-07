@@ -15,12 +15,14 @@ import { spawnSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildGraph } from "../src/graph/build.js";
+import { checkGraph } from "../src/graph/check.js";
 import { readGraph, wiringPath } from "../src/graph/write.js";
 import { checkGraphInvariants } from "../src/graph/invariants.js";
 import { resolveSymbol, edgeWalk } from "../src/graph/traverse.js";
 import { grepGraph } from "../src/search/grep.js";
 import { formatGrepResult } from "../src/search/grep-cli.js";
 import { headerOf } from "../src/graph/traverse-cli.js";
+import { ask } from "../src/ask/ask.js";
 import { scanUnityYaml, itemsOf } from "../src/graph/unity-yaml.js";
 import { blankInactiveBranches, evalCondition } from "../src/graph/csharp.js";
 import { typeName } from "../src/graph/unity-resolve.js";
@@ -226,6 +228,14 @@ test("Unity: Addressables addresses and AudioMixer exposed parameters", async ()
   assert.ok(!has(g, "sets", "Spawner.Sound", "Parameters/Attack"), "a mixer parameter is not an Animator parameter");
 });
 
+test("ask: an asset hit names who uses it", async () => {
+  await graph();
+  const r = ask(repoDir, "Walker prefab", { source: false });
+  const hit = r.hits.find((h) => h.pointer === "Assets/Prefabs/Walker.prefab");
+  assert.ok(hit, r.hits.map((h) => h.pointer).join("\n"));
+  assert.ok(hit.wiring?.some((w) => /^nests ← Assets\/Scenes\/Level\.unity/.test(w)), JSON.stringify(hit.wiring));
+});
+
 test("Unity: an incremental build equals a cold one (resolver enrichment never accumulates)", async () => {
   const dir = tmpRepo("unity-inc");
   cpSync(FIXTURE, dir, { recursive: true });
@@ -257,6 +267,22 @@ test("Unity: an incremental build equals a cold one (resolver enrichment never a
   await buildGraph(dir, { contextDir: join(dir, "graft") });
   assert.notEqual(memoKey(), key0, "a new member changes the declaration key");
   await same("after a declaration edit");
+});
+
+test("graft check sees the C# and Unity tiers, and ignores resolver-minted nodes", async () => {
+  const dir = tmpRepo("unity-check");
+  cpSync(FIXTURE, dir, { recursive: true });
+  spawnSync("git", ["init", "-q"], { cwd: dir });
+  await buildGraph(dir);
+  const fresh = await checkGraph(dir);
+  assert.deepEqual([fresh.added, fresh.removed, fresh.changed], [[], [], []]);
+  const spawner = join(dir, "Assets/Scripts/Spawner.cs");
+  writeFileSync(spawner, readFileSync(spawner, "utf8").replace("void Later() { }", "void Later() { Later(); }"));
+  rmSync(join(dir, "Assets/Scenes/Level.unity"));
+  const after = await checkGraph(dir);
+  assert.ok(after.changed.some((id) => id.endsWith("#Spawner.Later")), after.changed.join("\n"));
+  assert.ok(after.removed.includes("Assets/Scenes/Level.unity"), after.removed.join("\n"));
+  assert.equal(after.added.length, 0, after.added.join("\n"));
 });
 
 test("Unity: graph invariants hold", async () => {

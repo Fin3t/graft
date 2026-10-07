@@ -29,6 +29,7 @@ import {
 } from "../graph/scopes.js";
 import { normalizePathPrefix } from "../util/paths.js";
 import { resolveSymbol } from "../graph/traverse.js";
+import { unityKindOf } from "../graph/unity.js";
 import type { EdgeV1, GraphV1, NodeV1, Relation } from "../graph/types.js";
 import {
   combineComparableScopes,
@@ -314,6 +315,8 @@ const UNITY_RELS: Relation[] = [
   "overrides", "subscribes", "attaches", "nests", "variant_of", "instance_of", "assigns", "invokes", "loads", "sets", "plays", "uses_shader", "compiles",
 ];
 const INCOMING_RELS: Relation[] = ["calls", "references", "implements", "extends", ...UNITY_RELS];
+/** How another file uses a Unity asset (the `↳` line under an asset hit). */
+const ASSET_USE_RELS = new Set<Relation>(["assigns", "loads", "nests", "variant_of", "instance_of", "uses_shader", "imports", "references"]);
 const OUTGOING_RELS: Relation[] = ["calls", "references", "imports", "implements", "extends", ...UNITY_RELS];
 
 /** Split a prose query into word-like tokens, keeping dots so a qualified name
@@ -688,10 +691,29 @@ function lexical(
     }
     return own ? loadsFirst(own) : undefined;
   };
+  // A Unity asset answers "who uses it": its incoming wiring from other files.
+  let usersByTarget: Map<string, string[]> | null = null;
+  const usersOf = (n: NodeV1): string[] | undefined => {
+    if (!(n.kind === "asset" || (n.kind === "file" && unityKindOf(n.path)))) return undefined;
+    if (!usersByTarget) {
+      usersByTarget = new Map();
+      for (const e of graph?.edges ?? []) {
+        if (!ASSET_USE_RELS.has(e.relation)) continue;
+        const s = byId.get(e.source);
+        const t = byId.get(e.target);
+        if (!s || !t || s.path === t.path) continue;
+        const list = usersByTarget.get(t.path) ?? [];
+        if (list.length < 6) list.push(`${e.relation} ← ${s.kind === "file" ? s.path : `${s.name} (${s.path})`}${e.via ? ` via ${e.via}` : ""}`);
+        usersByTarget.set(t.path, list);
+      }
+    }
+    return usersByTarget.get(n.path);
+  };
   const makeSymbolHit = (id: string, hitScore: number, scope?: string): AskHit | null => {
     const n = byId.get(id);
     if (!n) return null;
-    const wiring = wiringOf(id);
+    const users = usersOf(n);
+    const wiring = users ? [...(wiringOf(id) ?? []), ...users].slice(0, 12) : wiringOf(id);
     const hit: AskHit = {
       kind: "symbol",
       title: `${n.name} · ${n.kind}`,

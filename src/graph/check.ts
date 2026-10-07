@@ -23,6 +23,8 @@ import { contextDirFor } from "../context/node-file.js";
 import { extractFile, languageOf } from "./extract.js";
 import { extractGeneric, genericLangOf, warmGenericGrammars } from "./generic.js";
 import { containerLangOf, extractContainer, warmContainerGrammars } from "./container.js";
+import { extractCSharp, isCSharpPath, warmCSharp } from "./csharp.js";
+import { extractUnity, unityKindOf } from "./unity.js";
 import { listSourceFiles } from "./build.js";
 import { readGraph, wiringPath } from "./write.js";
 import { readFingerprint } from "./fingerprint.js";
@@ -97,15 +99,18 @@ export async function checkGraph(
   await warmContainerGrammars(
     new Set(sourceFiles.map((f) => containerLangOf(f)?.name).filter((n): n is string => !!n)),
   );
+  const csharp = sourceFiles.some((f) => isCSharpPath(f)) && (await warmCSharp());
   const current = new Map<string, string>(); // id → body_hash
   for (const file of sourceFiles) {
-    // The same three-way branch `buildGraph` uses, in the same order. The two must
+    // The same branch `buildGraph` uses, in the same order. The two must
     // stay in step: a tier the build extracts and the check cannot see reports as
     // `removed` forever, and the `graft build` the check tells you to run can never
     // repair it.
     const lang = languageOf(file);
-    const container = lang ? null : containerLangOf(file);
-    const generic = lang || container ? null : genericLangOf(file);
+    const cs = !lang && csharp && isCSharpPath(file);
+    const unity = !lang && !cs ? unityKindOf(file) : null;
+    const container = lang || cs || unity ? null : containerLangOf(file);
+    const generic = lang || cs || unity || container ? null : genericLangOf(file);
     let source: string | null;
     try {
       source = readSourceFile(file);
@@ -117,7 +122,11 @@ export async function checkGraph(
     try {
       const extracted = lang
         ? extractFile(rel, source, lang)
-        : container
+        : cs
+          ? extractCSharp(rel, source)
+          : unity
+            ? extractUnity(rel, source)
+            : container
           ? extractContainer(rel, source, container)
           : generic
             ? extractGeneric(rel, source, generic.name)
@@ -136,11 +145,16 @@ export async function checkGraph(
   }
 
   const committedById = new Map(committed.nodes.map((n) => [n.id, n]));
+  // Nodes a resolver mints (a texture a scene references, a package class, the
+  // predefined Unity assemblies) sit at a path with no file node: no extraction
+  // produces them, so they are not `removed`. A deleted file keeps its file node.
+  const committedFiles = new Set(committed.nodes.filter((n) => n.kind === "file").map((n) => n.path));
   result.nodes = committedById.size;
   for (const [id, node] of committedById) {
     const now = current.get(id);
-    if (now === undefined) result.removed.push(id);
-    else if (now !== node.body_hash) result.changed.push(id);
+    if (now === undefined) {
+      if (committedFiles.has(node.path)) result.removed.push(id);
+    } else if (now !== node.body_hash) result.changed.push(id);
     if (node.summary_state === "stale") result.stale.push(id);
     if (node.summary_state === "pending") {
       result.pending++;
