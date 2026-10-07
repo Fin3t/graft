@@ -92,6 +92,7 @@ export const COMMON_KEYS = [
   'node_major',
   'ci',
   'agent_host',
+  'cli_name',
   'repo_id',
 ] as const;
 

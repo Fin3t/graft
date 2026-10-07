@@ -66,7 +66,7 @@ test('every event carries the common properties, and no identifier beyond them',
   const home = sandbox('tel-common');
   const ev = track('first_run', {}, { home, env: OPEN });
   assert.ok(ev);
-  for (const k of ['app_version', 'os', 'arch', 'node_major', 'ci', 'agent_host']) {
+  for (const k of ['app_version', 'os', 'arch', 'node_major', 'ci', 'agent_host', 'cli_name']) {
     assert.ok(k in ev.properties, `missing common property ${k}`);
   }
   // distinct_id is the random install uuid and nothing else.

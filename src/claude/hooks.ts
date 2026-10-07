@@ -17,6 +17,7 @@ import { readLink } from '../brain/link.js';
 import { pickedAgents } from '../brain/push.js';
 import { readTrailSnapshot, trailContextLine } from '../brain/watch-trail.js';
 import { maybeAutopush, readTrailPushState, recordSeenSuggestions, type AutopushDeps } from '../brain/autopush.js';
+import { tag } from '../brand.js';
 
 /** Prompts shorter than this never trigger retrieval — they are almost always
  * conversational ("yes go ahead", "thanks") and the coverage gate can't judge
@@ -219,18 +220,18 @@ export function lastFileScopeHint(dir: string, lastFile: string | null | undefin
       (n) => n.kind === 'file' && (n.path === lastFile || n.path.endsWith(`/${lastFile}`)),
     );
     if (matches.length === 0) {
-      console.error(`[graft] prompt hook: lastFile "${lastFile}" not found in the graph — skipping scope hint`);
+      console.error(`${tag()} prompt hook: lastFile "${lastFile}" not found in the graph — skipping scope hint`);
       return null;
     }
     const prefixes = new Set(matches.map((n) => scopeOf(n.path, scopes).prefix));
     if (prefixes.size > 1) {
-      console.error(`[graft] prompt hook: lastFile "${lastFile}" matches more than one scope — skipping scope hint`);
+      console.error(`${tag()} prompt hook: lastFile "${lastFile}" matches more than one scope — skipping scope hint`);
       return null;
     }
     const [prefix] = prefixes;
     return prefix === '' ? null : prefix; // root scope: nothing to narrow
   } catch (e: any) {
-    console.error(`[graft] prompt hook: scope hint lookup failed (${e?.message ?? e}) — skipping`);
+    console.error(`${tag()} prompt hook: scope hint lookup failed (${e?.message ?? e}) — skipping`);
     return null;
   }
 }

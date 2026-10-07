@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 /**
- * `graft` CLI. Commands: build, ask, check, viz, mcp, callers, skeleton, grep,
- * map, init. Git is the sync: commit graft/ and a clone has the graph. A
- * workspace parent (≥2 git children) federates query commands across children.
+ * The `trail` CLI, also run as `graft`, its old name. Commands: build, ask,
+ * check, viz, mcp, callers, skeleton, grep, map, init. Git is the sync: commit
+ * graft/ and a clone has the graph. A workspace parent (≥2 git children)
+ * federates query commands across children.
+ *
+ * Both names run this file. Under `graft` every command keeps its old name and
+ * meaning; under `trail` the layout changes (see `TRAIL` below and brand.ts).
  */
 import "dotenv/config";
 import { Command } from "commander";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Graft } from "./engine.js";
@@ -34,6 +39,7 @@ import {
 } from "./brain/push.js";
 import { apiBaseUrl, clearPendingSignup, readLink, readPendingSignup, writeLink, writePendingSignup } from "./brain/link.js";
 import { withLegacyNames } from "./legacy-args.js";
+import { brand, cmd, graftNotice, tag } from "./brand.js";
 import { currentStage, DOING_LABEL, rulesSoFar, watchBuild, type RepoState } from "./brain/watch.js";
 import {
   AGENT_WAIT_MS,
@@ -83,6 +89,7 @@ import { formatUpgradeReport, formatVersionReport, getNpmViewVersion, readCurren
 import { patchBuildConfig, type BuildConfig } from "./util/state.js";
 import { normalizePathPrefix } from "./util/paths.js";
 import { latestSession, formatSessionStats, sessionInputRate } from "./claude/session-metrics.js";
+import { listSessionIds, readSession, sessionDir } from "./claude/state.js";
 import { setInputRate } from "./context/savings.js";
 import { formatUpdateNudge, maybeRefreshInBackground, readStamp, readUpdateCache, refreshUpdateCache, wiredHostIds, writeStamp } from "./upkeep.js";
 import {
@@ -106,6 +113,29 @@ const program = new Command();
 const currentVersion = readCurrentVersion(import.meta.url);
 
 /**
+ * Started as `trail` rather than `graft`. Decided once, before any command is
+ * registered, because it changes which commands exist: under trail the old
+ * `graft trail …` group moves to the top level, `check` hands its name to the
+ * team check (the freshness check is `build --check`), and `stats` and
+ * `trail status` become one `status`. Under graft nothing moves.
+ */
+const TRAIL = brand() === "trail";
+
+/** Help-screen groups under trail; graft keeps its one flat list. */
+const GROUP = {
+  find: "Find code · your agent runs these:",
+  setup: "Setup:",
+  cloud: "Trail cloud:",
+  ci: "CI:",
+} as const;
+
+/** Put a command in a help group, under trail only. */
+function grouped(c: Command, heading: string): Command {
+  if (TRAIL) c.helpGroup(heading);
+  return c;
+}
+
+/**
  * What the `query` telemetry event will say, filled in by the command as it runs
  * and emitted once from the `postAction` hook below.
  *
@@ -114,7 +144,7 @@ const currentVersion = readCurrentVersion(import.meta.url);
  * centrally — and because a command that calls `process.exit` should simply
  * report nothing, which falls out of never emitting until postAction.
  */
-let queryNote: { repo?: string; hit?: "yes" | "no" } = {};
+let queryNote: { repo?: string; hit?: "yes" | "no"; command?: string } = {};
 
 /** Record the repo a query ran against, and pass it straight through so call
  *  sites stay one line. */
@@ -133,8 +163,13 @@ function noteHit(found: boolean): void {
 }
 
 program
-  .name("graft")
-  .description("Build a repo's context graph as linked markdown, and keep it in sync with the code.")
+  .name(brand())
+  .description(
+    TRAIL
+      ? "Your team's shared memory for coding agents: a code map on your machine, and\n" +
+          "the notes, decisions and skills your whole team shares."
+      : "Build a repo's context graph as linked markdown, and keep it in sync with the code.",
+  )
   .version(currentVersion, "-v, --version")
   .option("--dir <path>", "context graph directory (default: <repo>/graft)")
   .option("--provider <name>", "LLM wire format: openai | anthropic | litellm | orcarouter (env GRAFT_PROVIDER)")
@@ -192,7 +227,7 @@ const DIR_ARG = ["[dir]", "repository root (default: nearest ancestor with a gra
 function queryRoot(dir?: string): string {
   if (dir !== undefined) return resolve(dir);
   const { root, levels } = nearestGraftRoot(process.cwd(), program.opts<GlobalOpts>().dir);
-  if (levels > 0) console.error(`[graft] no graft/ here — answering from ${root}/graft`);
+  if (levels > 0) console.error(`${tag()} no graft/ here — answering from ${root}/graft`);
   return root;
 }
 
@@ -254,6 +289,10 @@ const UPKEEP_SKIP = new Set(["version", "upgrade", "_update-check", "_brain-refr
  */
 program.hook("preAction", (_parent, action) => {
   if (UPKEEP_SKIP.has(action.name())) return;
+  // Someone typing graft by hand learns its new name, once a day. Agents,
+  // hooks, CI and pipes never see it (see graftNotice).
+  const renamed = graftNotice({ ran: spelling(action), tty: Boolean(process.stderr.isTTY) });
+  if (renamed) console.error(renamed);
   maybeRefreshInBackground();
   const nudge = formatUpdateNudge(currentVersion, readUpdateCache()?.latest);
   if (nudge) console.error(nudge);
@@ -273,10 +312,18 @@ program.hook("preAction", (_parent, action) => {
  * is the right failure mode for a metric.
  */
 program.hook("postAction", (_parent, action) => {
-  const name = action.name();
+  // `trail build --check` is graft's `check`, and counts as it always has.
+  const name = queryNote.command ?? action.name();
   if (!isTrackedCommand(name)) return;
   track("query", { command: name, surface: "cli", hit: queryNote.hit }, { repo: queryNote.repo });
 });
+
+/** `graft ask`, `graft trail status`: a command as graft spells it, whatever ran it. */
+function spelling(action: Command): string {
+  const words: string[] = [];
+  for (let c: Command | null = action; c && c.parent; c = c.parent) words.unshift(c.name());
+  return ["graft", ...words].join(" ");
+}
 
 // Hidden from --help: only ever spawned detached by maybeRefreshInBackground.
 program
@@ -310,8 +357,7 @@ program
     await runFlush();
   });
 
-program
-  .command("telemetry")
+grouped(program.command("telemetry"), GROUP.setup)
   .description("Show, inspect, or turn off the anonymous usage stats (see TELEMETRY.md)")
   .argument("[action]", "status (default) | enable | disable | debug", "status")
   .action((action: string) => {
@@ -321,7 +367,7 @@ program
         return;
       case "enable":
         patchState({ enabled: true });
-        console.log("telemetry: on — anonymous, aggregate-only. `graft telemetry status` for details.");
+        console.log(`telemetry: on — anonymous, aggregate-only. \`${cmd("graft telemetry status")}\` for details.`);
         return;
       case "disable":
         // Also stamp the notice as shown: someone who has just opted out should
@@ -338,30 +384,33 @@ program
     }
   });
 
+// Hidden under trail, where -v says the same; listed under graft as it was.
 program
-  .command("version")
+  .command("version", { hidden: TRAIL })
   .description("Print the installed version and the latest published on npm")
   .action(() => {
     const latest = getNpmViewVersion();
     console.log(formatVersionReport(currentVersion, latest));
   });
 
-program
-  .command("upgrade")
-  .description("Upgrade the globally installed graft to the latest version on npm")
+grouped(program.command("upgrade"), GROUP.setup)
+  .description(`Upgrade the globally installed ${brand()} to the latest version on npm`)
   .action(() => {
     const result = runUpgrade(import.meta.url);
     console.log(formatUpgradeReport(result));
     if (result.ran && !result.ok) process.exit(1);
   });
 
-program
-  .command("build")
+grouped(program.command("build"), GROUP.setup)
   .description(
-    "Build graft/ from your code — wiring graph + per-file cards ($0, no key). " +
-      "Add --deep for the LLM concept map + per-symbol summaries/crux.",
+    TRAIL
+      ? "Rebuild the code map in graft/ ($0, no key). --check fails if it's stale; --deep adds LLM summaries."
+      : "Build graft/ from your code — wiring graph + per-file cards ($0, no key). " +
+          "Add --deep for the LLM concept map + per-symbol summaries/crux.",
   )
   .argument("[dir]", "repository root", ".")
+  .option("--check", "build nothing: fail if graft/ is stale relative to the code (for CI)")
+  .option("--json", "with --check: output the drift as JSON")
   .option("--deep", "run the LLM pass: concept nodes (graft/*.md) + per-symbol summary/crux")
   .option("-e, --extensions <exts...>", 'code extensions to include (e.g. ".ts" ".py"); an extension with no parser is ignored with a warning that lists the supported set')
   .option("-j, --concurrency <n>", "files summarized in parallel during --deep (default 5)")
@@ -405,6 +454,8 @@ program
   .action(async (
     dir: string,
     opts: {
+      check?: boolean;
+      json?: boolean;
       deep?: boolean;
       extensions?: string[];
       concurrency?: string;
@@ -420,6 +471,13 @@ program
     },
     command: Command,
   ) => {
+    if (opts.check) {
+      // The freshness check, which was `graft check`. Counted as `check` so the
+      // metric carries on across the rename; the dir defaults like a query's.
+      queryNote.command = "check";
+      await runCheckCommand(command.args[0], { extensions: opts.extensions, json: opts.json }, cmd("graft check"));
+      return;
+    }
     const buildStartedAt = Date.now();
     if (opts.gitignore === false) process.env.GRAFT_NO_GITIGNORE = "1";
     if (opts.ignore === false) process.env.GRAFT_NO_IGNORE = "1";
@@ -494,7 +552,7 @@ program
       console.error(
         "⚠ no API key set — falling back to the structural build (no LLM summaries).\n" +
           "  Set GRAFT_API_KEY (and GRAFT_PROVIDER / GRAFT_BASE_URL / GRAFT_MODEL for your\n" +
-          "  provider) and re-run `graft build --deep` to add concept nodes and summaries.",
+          `  provider) and re-run \`${cmd("graft build --deep")}\` to add concept nodes and summaries.`,
       );
     }
     if (deep && resolved.usedLegacyEnv) {
@@ -589,7 +647,7 @@ program
     if (process.env.GRAFT_NO_GITIGNORE) {
       console.log(`  ${rel}/ is a local cache — add it to your gitignore if you want it untracked.`);
     } else {
-      console.log(`  ${rel}/ is git-ignored (added automatically) — a local cache; teammates run \`graft build\` to get their own.`);
+      console.log(`  ${rel}/ is git-ignored (added automatically) — a local cache; teammates run \`${cmd("graft build")}\` to get their own.`);
     }
 
     // #127: a --deep run whose LLM calls failed used to print the same success
@@ -616,7 +674,7 @@ program
         if (conceptErrors.length > 0) console.error(`  ${conceptErrors.length} concept-pass error(s).`);
         console.error(`  meaning coverage: ${ready}/${total} symbols (${pct}%).`);
         console.error(
-          "  Nothing computed was lost: re-run `graft build --deep` to resume from what is cached.\n" +
+          `  Nothing computed was lost: re-run \`${cmd("graft build --deep")}\` to resume from what is cached.\n` +
             "  Pass --allow-partial to accept a degraded meaning tier and exit 0.",
         );
         if (!opts.allowPartial) process.exitCode = 1;
@@ -624,8 +682,7 @@ program
     }
   });
 
-program
-  .command("ask")
+grouped(program.command("ask"), GROUP.find)
   .description("Query the graft/ graph — returns ranked nodes + exact file:line, routed to prose or wiring ($0, no key)")
   .argument("<query>", "what you want to understand, in plain words")
   .argument(...DIR_ARG)
@@ -664,8 +721,7 @@ program
     }
   });
 
-program
-  .command("skeleton")
+grouped(program.command("skeleton"), GROUP.find)
   .description("Signatures-only view of one file from the wiring graph — the cheapest way to see a file's API surface")
   .argument("<file>", "repo-relative path (or unique basename) of the file")
   .argument(...DIR_ARG)
@@ -681,13 +737,42 @@ program
     else process.stdout.write(formatSkeleton(r));
   });
 
-program
-  .command("check")
-  .description("Fail if graft/ is stale relative to the code (for CI)")
-  .argument(...DIR_ARG)
-  .option("-e, --extensions <exts...>", "code extensions to include")
-  .option("--json", "output the drift as JSON")
-  .action(async (dirArg: string | undefined, opts: { extensions?: string[]; json?: boolean }) => {
+if (!TRAIL) {
+  program
+    .command("check")
+    .description("Fail if graft/ is stale relative to the code (for CI)")
+    .argument(...DIR_ARG)
+    .option("-e, --extensions <exts...>", "code extensions to include")
+    .option("--json", "output the drift as JSON")
+    .action(async (dirArg: string | undefined, opts: { extensions?: string[]; json?: boolean }) => {
+      await runCheckCommand(dirArg, opts, "graft check");
+    });
+} else {
+  // `trail check` is the team check: your diff against what the team has
+  // learned. Until that ships it only says so, and where the freshness check
+  // went. Non-zero, so a CI step renamed from `graft check` fails loudly
+  // instead of passing without checking anything.
+  program
+    .command("check", { hidden: true })
+    .description("Check your diff against everything the team has learned")
+    .argument("[dir]")
+    .allowUnknownOption()
+    .action(() => {
+      console.error("· trail check will compare your diff against everything your team has learned. It isn't available yet.");
+      console.error("· looking for the code map freshness check? that's trail build --check");
+      process.exitCode = 1;
+    });
+}
+
+/**
+ * The freshness check: `graft check`, and `trail build --check`. `label` is how
+ * the report names the command, so each name prints its own spelling.
+ */
+async function runCheckCommand(
+  dirArg: string | undefined,
+  opts: { extensions?: string[]; json?: boolean },
+  label: string,
+): Promise<void> {
     warnUnsupportedExtensions(opts.extensions);
     const dir = noteQuery(queryRoot(dirArg));
     const checkGlobalDir = program.opts<GlobalOpts>().dir;
@@ -708,24 +793,25 @@ program
     if (opts.json) {
       console.log(JSON.stringify({ context: r, graph: g.missing ? null : g }, null, 2));
     } else if (bothMissing) {
-      console.log("graft check: NO GRAPH\n\nNo graft/ graph found. Run `graft build` first.");
+      console.log(`${label}: NO GRAPH\n\nNo graft/ graph found. Run \`${cmd("graft build")}\` first.`);
     } else {
       if (r.missing) {
         console.log(
-          "deep layer: not built (run `graft build --deep` for concept nodes) — wiring graph is the source of truth",
+          `deep layer: not built (run \`${cmd("graft build --deep")}\` for concept nodes) — wiring graph is the source of truth`,
         );
       } else {
-        console.log(formatCheckReport(r));
+        console.log(formatCheckReport(r, label));
       }
       if (!g.missing) console.log("\n" + formatGraphCheckReport(g));
     }
 
     if (bothMissing || markdownFail || wiringFail) process.exit(1);
-  });
+}
 
+// Under trail this is part of `status`; the old name still runs, unlisted.
 program
-  .command("stats")
-  .description("Show this agent session's graft-vs-source usage mix and tokens saved")
+  .command("stats", { hidden: TRAIL })
+  .description(`Show this agent session's ${brand()}-vs-source usage mix and tokens saved`)
   .argument(...DIR_ARG)
   .option("--json", "output the session stats as JSON")
   .action((dirArg: string | undefined, opts: { json?: boolean }) => {
@@ -742,7 +828,7 @@ program
   });
 
 program
-  .command("viz")
+  .command("viz", { hidden: TRAIL })
   .description("Serve an interactive visualization of the context graph (and graph.json when present)")
   .argument(...DIR_ARG)
   .option("-p, --port <port>", "port to serve on", "4400")
@@ -767,7 +853,7 @@ program
     const globalOpts = program.opts<{ dir?: string }>();
     const contextDir = contextDirFor(root, globalOpts.dir);
     if (!existsSync(contextDir)) {
-      console.error(`✗ no context graph at ${contextDir} — run \`graft build --deep\` first`);
+      console.error(`✗ no context graph at ${contextDir} — run \`${cmd("graft build --deep")}\` first`);
       process.exit(1);
     }
     const viewerDir = fileURLToPath(new URL("./viewer/", import.meta.url)); // prebuilt
@@ -784,7 +870,7 @@ program
       });
       const kb = Math.round(out.bytes / 1024);
       console.log(
-        `graft viz → ${out.file} (${kb} kB, ${out.contextNodes} concept nodes, ${out.codeNodes} code nodes)`,
+        `${cmd("graft viz")} → ${out.file} (${kb} kB, ${out.contextNodes} concept nodes, ${out.codeNodes} code nodes)`,
       );
       return;
     }
@@ -795,7 +881,7 @@ program
       port: Number(opts.port),
       repoName: basename(root),
     });
-    console.log(`graft viz → ${srv.url}  (ctrl-c to stop)`);
+    console.log(`${cmd("graft viz")} → ${srv.url}  (ctrl-c to stop)`);
     if (opts.open) {
       const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
       spawn(opener, [srv.url], { stdio: "ignore", detached: true, shell: process.platform === "win32" }).unref();
@@ -803,7 +889,7 @@ program
   });
 
 program
-  .command("mcp")
+  .command("mcp", { hidden: TRAIL })
   .description("Serve the graph over MCP (stdio) — exposes graft_find_code, graft_trace_calls, graft_find_all, graft_file_api, graft_repo_map and graft_check_freshness as tools")
   .argument(...DIR_ARG)
   .action(async (dirArg: string | undefined) => {
@@ -813,8 +899,7 @@ program
     startMcpServer(dir, globalOpts.dir, currentVersion);
   });
 
-program
-  .command("callers")
+grouped(program.command("callers"), GROUP.find)
   .description(
     "Who calls/references a symbol ($0, no LLM). --direction out gives callees (what it calls); --depth N (or all) walks transitively for full blast radius",
   )
@@ -855,8 +940,7 @@ program
     },
   );
 
-program
-  .command("blast")
+grouped(program.command("blast"), GROUP.ci)
   .description(
     "Blast radius of a diff: what depends on the lines this change touched ($0, no LLM). " +
       "Built for CI — `--format markdown` is a PR comment with a Mermaid diagram.",
@@ -888,8 +972,7 @@ program
     });
   });
 
-program
-  .command("grep")
+grouped(program.command("grep"), GROUP.find)
   .description("Regex search over indexed files, hits grouped by enclosing symbol and ranked by coupling ($0, no LLM)")
   .argument("<pattern>", "regex pattern (or literal string with --fixed)")
   .argument(...DIR_ARG)
@@ -924,8 +1007,7 @@ program
     },
   );
 
-program
-  .command("map")
+grouped(program.command("map"), GROUP.find)
   .description(
     "Token-budgeted repo orientation — directory clusters, per-directory hubs, and global hotspots from the wiring graph ($0, no LLM)",
   )
@@ -956,7 +1038,7 @@ program
     const contextDir = contextDirFor(root, globalOpts.dir);
     const graph = loadGraphCached(contextDir);
     if (!graph) {
-      console.error("✗ no graph — run graft build first");
+      console.error(`✗ no graph — run ${cmd("graft build")} first`);
       process.exit(1);
       return;
     }
@@ -968,9 +1050,12 @@ program
     process.stdout.write(formatRepoMap(map));
   });
 
-program
-  .command("init")
-  .description("Wire Graft into the AI coding agents used with this repo (instruction files + MCP server; full hooks + statusline + MCP for Claude Code)")
+grouped(program.command("init"), GROUP.setup)
+  .description(
+    TRAIL
+      ? "Wire trail into your agents: instruction files and MCP for each, plus hooks and a statusline for Claude Code"
+      : "Wire Graft into the AI coding agents used with this repo (instruction files + MCP server; full hooks + statusline + MCP for Claude Code)",
+  )
   .argument("[dir]", "target repo directory", ".")
   .option("--no-build", "skip building the graph (wire files only)")
   .option("--agents <ids...>", `only these agents (${hostIds().join(", ")}, claude)`)
@@ -1137,14 +1222,14 @@ async function runInitCommand(
       } else if (res.built) {
         graphLine = "✓ graph built";
       } else if (res.failed) {
-        graphLine = "⚠ the graph build failed — run graft build to see why";
+        graphLine = `⚠ the graph build failed — run ${cmd("graft build")} to see why`;
       } else if (existing) {
         graphNodes = existing.meta.nodeCount;
         graphLine = `✓ graph ready · ${fmt(existing.meta.nodeCount)} nodes, ${fmt(existing.meta.edgeCount)} edges`;
       } else if (hasGraftIndex(repo)) {
         graphLine = "✓ graph ready";
       } else {
-        graphLine = "· skipped the graph build — run graft build";
+        graphLine = `· skipped the graph build — run ${cmd("graft build")}`;
       }
     }
 
@@ -1179,11 +1264,11 @@ async function runInitCommand(
         else console.error(`✓ brain: pulled ${res.ruleCount} rule(s) from ${brainLink.brainId}`);
         for (const w of res.writes) console.error(`✓ brain rules: ${w.path} (${w.action})`);
         if (res.ruleCount > 0 && res.writes.length === 0)
-          console.error("· no instruction file to write rules into — graft ask still carries them");
+          console.error(`· no instruction file to write rules into — ${cmd("graft ask")} still carries them`);
       } else if (res.warning) {
         console.error(`⚠ trail: ${res.warning}`);
       } else if (res.ruleCount === 0) {
-        console.error("✓ trail connected · no rules yet — graft trail push reads this repo into it");
+        console.error(`✓ trail connected · no rules yet — ${cmd("graft trail push")} reads this repo into it`);
       } else {
         const where = res.writes.map((w) => shown(repo, w.path)).join(", ");
         const n = `${res.ruleCount.toLocaleString("en-US")} rule${res.ruleCount === 1 ? "" : "s"}`;
@@ -1200,7 +1285,7 @@ async function runInitCommand(
         const top = parts.length > 1 ? `${parts[0]}/` : parts[0]!;
         if (!tops.includes(top)) tops.push(top);
       }
-      console.error("· restart your agents so a new session picks up graft");
+      console.error(`· restart your agents so a new session picks up ${brand()}`);
       if (tops.length)
         console.error(`· commit ${tops.slice(0, 4).join(" ")}${tops.length > 4 ? ` +${tops.length - 4} more` : ""} to share it — graft/ stays local and git-ignored`);
     }
@@ -1288,7 +1373,7 @@ function wireTarget(
         say(`· mcp claude: ${res.mcp.path} (already registered)`);
       else
         say(`✓ mcp claude: ${res.mcp.path} (${res.mcp.action}) — restart Claude Code to load the graft MCP server`);
-      say(res.built ? "✓ built the graph (graft build)" : "· skipped graph build");
+      say(res.built ? `✓ built the graph (${cmd("graft build")})` : "· skipped graph build");
       if (!wantStatusline) say("· skipped Claude Code statusLine (--no-statusline)");
       for (const w of res.warnings) say(`⚠ ${w}`);
     }
@@ -1330,7 +1415,7 @@ function wireTarget(
       if (!quiet)
         say(
           buildGraphIfMissing(repo, { build: opts.build, cliPath })
-            ? "✓ built the graph (graft build)"
+            ? `✓ built the graph (${cmd("graft build")})`
             : "· skipped graph build",
         );
     }
@@ -1371,9 +1456,8 @@ function formatRetractions(rs: Retraction[], apply: boolean): string {
   return lines.join("\n").replace(/^\n/, "");
 }
 
-program
-  .command("uninstall")
-  .description("Remove every file and config entry graft has written to this repo (the inverse of init)")
+grouped(program.command("uninstall"), GROUP.setup)
+  .description(`Remove every file and config entry ${TRAIL ? "trail or graft" : "graft"} has written to this repo (the inverse of init)`)
   .argument("[dir]", "target repo directory", ".")
   .option("-y, --yes", "actually remove (without this, prints what it would remove and exits)")
   .option("--keep-cache", "keep graft/ and the .gitignore entries — wiring only")
@@ -1396,14 +1480,10 @@ program
     console.error(
       bad.length
         ? `\n⚠ ${bad.length} file(s) could not be parsed and were left as-is — see above.`
-        : "\n✓ graft fully removed. `graft init` re-wires from scratch.",
+        : `\n✓ ${brand()} fully removed. \`${cmd("graft init")}\` re-wires from scratch.`,
     );
   });
 
-// `graft trail …` still works: see legacy-args.ts.
-const brain = program
-  .command("trail")
-  .description("The Trail attached to this repo: the rules mined from its own history");
 
 /**
  * Get this repo a trail from the terminal, by sending the user through signup
@@ -1449,7 +1529,7 @@ async function signUpForBrain(repo: string, slug: string): Promise<BrainLink | n
   spinner.stop();
   if (got === "stopped") {
     handoff.close();
-    console.error("· stopped — nothing was sent; run graft trail push again when you're ready");
+    console.error(`· stopped — nothing was sent; run ${cmd("graft trail push")} again when you're ready`);
     track("brain_signup_settled", { outcome: "stopped", mode: "terminal", duration_bucket: durationBucket(Date.now() - startedAt) }, { repo });
     process.exitCode = 130;
     return null;
@@ -1493,7 +1573,7 @@ async function signUpWithoutTerminal(repo: string, slug: string): Promise<BrainL
     console.error(`  ${url}`);
     console.error("· nothing has been read or sent yet.");
     console.error(
-      "· next: ask the user to sign up in the tab that just opened (or at the link above), then run `graft trail push` again straight away — it waits for the sign-up to finish and carries on with the push. Don't wait for them to reply first.",
+      `· next: ask the user to sign up in the tab that just opened (or at the link above), then run \`${cmd("graft trail push")}\` again straight away — it waits for the sign-up to finish and carries on with the push. Don't wait for them to reply first.`,
     );
     settled("agent_link_opened");
     process.exitCode = 1;
@@ -1514,7 +1594,7 @@ async function signUpWithoutTerminal(repo: string, slug: string): Promise<BrainL
   }
   if ("pending" in got) {
     console.error("· not signed up yet — nothing has been read or sent.");
-    console.error("· next: run `graft trail push` again to keep waiting. The link above stays valid for about 15 minutes.");
+    console.error(`· next: run \`${cmd("graft trail push")}\` again to keep waiting. The link above stays valid for about 15 minutes.`);
     settled("still_waiting");
     process.exitCode = 1;
     return null;
@@ -1526,12 +1606,18 @@ async function signUpWithoutTerminal(repo: string, slug: string): Promise<BrainL
   return null;
 }
 
-brain
-  .command("connect")
+function connectCommand(name = "connect"): Command {
+  return new Command(name)
   .description("Attach a brain to this repo and pull its rules")
   .argument("<handoff>", "<brainId>:<token>, or a bare brain id with GRAFT_BRAIN_TOKEN set")
   .argument("[dir]", "target repo directory", ".")
   .action(async (handoff: string, dir: string) => {
+    await runConnect(handoff, dir);
+  });
+}
+
+/** `graft trail connect`, and `trail login <handoff>`: attach a trail from a Trail page's handoff. */
+async function runConnect(handoff: string, dir: string): Promise<void> {
     const parsed = parseBrainArg(handoff);
     if ("error" in parsed) {
       console.error(`✗ ${parsed.error}`);
@@ -1549,28 +1635,29 @@ brain
       // read the repo yet. Saying "0 rules" without saying why reads as a
       // failure, and the next step is the whole point.
       console.error("✓ attached this repo to the brain — it has no rules yet");
-      console.error("· run `graft trail push` to read this repository into it");
+      console.error(`· run \`${cmd("graft trail push")}\` to read this repository into it`);
       return;
     }
     console.error(`✓ pulled ${res.ruleCount} rule(s) from ${parsed.brainId}`);
     for (const w of res.writes) console.error(`✓ ${w.path} (${w.action})`);
-  });
+}
 
-brain
-  .command("pull")
+function pullCommand(name = "pull"): Command {
+  return new Command(name)
   .description("Refresh the trail's rules and write every change you accepted in Trail into this repo's context files")
   .argument("[dir]", "target repo directory", ".")
   .option("--dry-run", "show what would change without writing anything or telling Trail")
   .action(async (dir: string, opts: { dryRun?: boolean }) => {
     await runTrailPullCommand(dir, opts);
   });
+}
 
 /** `graft trail pull`, and `graft claude-md pull` which is now the same thing. */
 async function runTrailPullCommand(dir: string, opts: { dryRun?: boolean }): Promise<void> {
   const repo = resolve(dir);
   const link = readLink(repo);
   if (!link) {
-    console.error("✗ this repo has no trail yet — run graft trail push first");
+    console.error(`✗ this repo has no trail yet — run ${cmd("graft trail push")} first`);
     process.exitCode = 1;
     return;
   }
@@ -1586,8 +1673,8 @@ function positiveNumber(raw: string): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-brain
-  .command("watch")
+function watchCommand(name = "watch"): Command {
+  return new Command(name)
   .description("Wait until Trail has suggestions to review or accepted changes to pull, then say so once")
   .argument("[dir]", "target repo directory", ".")
   .option("--interval <seconds>", "how often to check Trail", String(WATCH_DEFAULTS.intervalMs / 1000))
@@ -1651,9 +1738,10 @@ brain
       finish(result);
     },
   );
+}
 
-brain
-  .command("push")
+function pushCommand(name = "push"): Command {
+  return new Command(name)
   .description("Read THIS repo on your machine and build its trail — no GitHub App, works on private repos")
   .argument("[dir]", "target repo directory", ".")
   .option("--no-approve", "leave the mined rules as drafts for review")
@@ -1681,7 +1769,7 @@ brain
     }
     if (!link) {
       if (!here) {
-        console.error("✗ this directory has no GitHub origin remote — graft can only push a GitHub repository today");
+        console.error(`✗ this directory has no GitHub origin remote — ${brand()} can only push a GitHub repository today`);
         process.exitCode = 1;
         return;
       }
@@ -1706,7 +1794,7 @@ brain
     }
     const ctx = pushContext(repo);
     if (!ctx) {
-      console.error("✗ this directory has no GitHub origin remote — graft can only push a GitHub repository today");
+      console.error(`✗ this directory has no GitHub origin remote — ${brand()} can only push a GitHub repository today`);
       process.exitCode = 1;
       return;
     }
@@ -1732,14 +1820,14 @@ brain
     // non-interactive push only says what to run.
     if (wiredHostIds(repo).length === 0) {
       if (process.stdin.isTTY && tty) {
-        console.error("· graft isn't set up here yet — pick the agents your team uses:");
+        console.error(`· ${brand()} isn't set up here yet — pick the agents your team uses:`);
         await runInitCommand(
           repo,
           { build: true, mcp: true, hooks: true, statusline: true, global: true, verbose },
           { epilogue: false, push: !verbose },
         );
       } else {
-        console.error("· graft isn't set up here — run graft init so your agents read these rules");
+        console.error(`· ${brand()} isn't set up here — run ${cmd("graft init")} so your agents read these rules`);
       }
     }
 
@@ -1747,7 +1835,7 @@ brain
     // here can later go stale on its own. Without one the ingest still works;
     // its rules simply govern the repo rather than a symbol in it.
     const graph = loadGraphCached(contextDirFor(repo, program.opts<GlobalOpts>().dir));
-    if (!graph) console.error("· no graph yet — run graft build so rules can be anchored to symbols");
+    if (!graph) console.error(`· no graph yet — run ${cmd("graft build")} so rules can be anchored to symbols`);
     const reading = startSpinner(`reading ${ctx.owner}/${ctx.name} · commits, pull-request discussion and the docs in the tree`);
     const built = await buildLocalDigest(repo, graph, { autoApprove: opts.approve !== false, context: ctx });
     if ("error" in built) {
@@ -1862,6 +1950,7 @@ brain
     }
     console.error(`  ${buildPage}`);
   });
+}
 
 // `graft claude-md pull` is `graft trail pull` now: the CLAUDE.md changes are
 // the first half of what that writes. Kept so the old name keeps working, but
@@ -1876,12 +1965,12 @@ claudeMd
   .argument("[dir]", "target repo directory", ".")
   .option("--dry-run", "show what would change without writing anything or telling Trail")
   .action(async (dir: string, opts: { dryRun?: boolean }) => {
-    console.error("· graft claude-md pull is now part of graft trail pull — running that");
+    console.error(`· ${brand()} claude-md pull is now part of ${cmd("graft trail pull")} — running that`);
     await runTrailPullCommand(dir, opts);
   });
 
-brain
-  .command("status")
+function brainStatusCommand(name = "status"): Command {
+  return new Command(name)
   .description("Show the attached brain, how many rules are cached, and how many still match the code")
   .argument("[dir]", "target repo directory", ".")
   .option("--json", "machine-readable output")
@@ -1903,13 +1992,13 @@ brain
       return;
     }
     if (!link) {
-      console.error("· no brain attached — run `graft trail connect <brainId>:<token>`");
+      console.error(`· no brain attached — run \`${cmd("graft trail connect")} <brainId>:<token>\``);
       return;
     }
     console.error(`brain ${link.brainId}`);
     console.error(`  ${rules.length} rule(s) cached${fetchedAt ? `, pulled ${new Date(fetchedAt).toISOString()}` : ""}`);
     if (!graph) {
-      console.error("  no graph yet — run `graft build` to see which rules still match the code");
+      console.error(`  no graph yet — run \`${cmd("graft build")}\` to see which rules still match the code`);
       return;
     }
     const stale = applied.filter((a) => a.stale);
@@ -1921,9 +2010,10 @@ brain
     );
     for (const a of stale.slice(0, 10)) console.error(`    - ${a.rule}\n      ${a.pointer}`);
   });
+}
 
-brain
-  .command("disconnect")
+function disconnectCommand(name = "disconnect"): Command {
+  return new Command(name)
   .description("Forget the attached brain (its rules stay in the instruction files until the next init)")
   .argument("[dir]", "target repo directory", ".")
   .action((dir: string) => {
@@ -1931,6 +2021,196 @@ brain
     clearLink(resolve(dir));
     console.error(`✓ detached the brain from ${repo}`);
   });
+}
+
+/**
+ * `trail login`: link this repo to Trail. With a handoff from a Trail page it
+ * attaches that trail, exactly as `graft trail connect` does. Without one it
+ * signs up in the browser, as `graft trail push` does for a repo with no trail,
+ * and stops there: nothing about the repository is read until `trail push`.
+ */
+function loginCommand(name = "login"): Command {
+  return new Command(name)
+    .description("Sign in and link this repo to Trail")
+    .argument("[handoff]", "<brainId>:<token> from a Trail page; leave it out to sign up in the browser")
+    .argument("[dir]", "target repo directory", ".")
+    .action(async (handoff: string | undefined, dir: string) => {
+      if (handoff) {
+        await runConnect(handoff, dir);
+        return;
+      }
+      const repo = resolve(dir);
+      const existing = readLink(repo);
+      if (existing) {
+        console.error(`✓ already signed in · this repo is linked to Trail (${existing.brainId})`);
+        return;
+      }
+      const here = repoSlugFromGit(repo);
+      if (!here) {
+        console.error(`✗ this directory has no GitHub origin remote — ${brand()} can only link a GitHub repository today`);
+        process.exitCode = 1;
+        return;
+      }
+      const link = await signUpForBrain(repo, `${here.owner}/${here.name}`);
+      if (!link) {
+        if (!process.exitCode) process.exitCode = 1;
+        return;
+      }
+      console.error(`· next: ${cmd("graft trail push")} reads this repo's history into it`);
+    });
+}
+
+/** Files ending in `ext` directly under `dir`, or 0 when it doesn't exist. */
+function countFiles(dir: string, ext: string): number {
+  try {
+    return readdirSync(dir).filter((f) => f.endsWith(ext)).length;
+  } catch {
+    return 0;
+  }
+}
+
+/** Directories directly under `dir`, or 0 when it doesn't exist. */
+function countDirs(dir: string): number {
+  try {
+    return readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).length;
+  } catch {
+    return 0;
+  }
+}
+
+/** Tokens saved by this repo's agent sessions touched in the last 7 days. */
+function savedThisWeek(repo: string, now = Date.now()): number {
+  const since = now - 7 * 24 * 60 * 60 * 1000;
+  let total = 0;
+  for (const id of listSessionIds(repo)) {
+    try {
+      if (statSync(join(sessionDir(repo), `${id}.json`)).mtimeMs < since) continue;
+    } catch {
+      continue;
+    }
+    total += readSession(repo, id).savedTokens ?? 0;
+  }
+  return total;
+}
+
+/** 212345 → `212k`, 1_250_000 → `1.3M`. */
+function shortCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(n);
+}
+
+/**
+ * `trail status`: what was `graft stats` and `graft trail status`, on one
+ * screen. The code map and whether it matches the code, the team's notes and
+ * skills in .trail/, the Trail link and how many of its rules still match, and
+ * what the agents saved this week.
+ */
+function statusCommand(name = "status"): Command {
+  return new Command(name)
+    .description("Code map, notes, cloud link and tokens saved, on one screen")
+    .argument(...DIR_ARG)
+    .option("--json", "machine-readable output")
+    .action(async (dirArg: string | undefined, opts: { json?: boolean }) => {
+      const repo = queryRoot(dirArg);
+      const graph = loadGraphCached(contextDirFor(repo, program.opts<GlobalOpts>().dir));
+      const g = graph ? await engineFrom().checkGraph(repo) : null;
+      const fresh = g && !g.missing ? g.ok : null;
+      const trailDir = join(repo, ".trail");
+      const hasTrailDir = existsSync(trailDir);
+      const notes = countFiles(join(trailDir, "notes"), ".md");
+      const skills = countDirs(join(trailDir, "skills"));
+      const { link, rules } = brainStatus(repo);
+      const anchored = link && graph ? rulesForPointers(graph.nodes.map((n) => `${n.path}:${n.span}`), rules, graph) : [];
+      const matching = anchored.filter((a) => !a.stale).length;
+      const saved = savedThisWeek(repo);
+
+      if (opts.json) {
+        console.log(
+          JSON.stringify(
+            {
+              codeMap: graph ? { nodes: graph.meta.nodeCount, inSync: fresh } : null,
+              trail: hasTrailDir ? { notes, skills } : null,
+              cloud: link ? { brainId: link.brainId, cached: rules.length, anchored: anchored.length, matching } : null,
+              week: { savedTokens: saved },
+            },
+            null,
+            2,
+          ),
+        );
+        return;
+      }
+      const fmt = (x: number) => x.toLocaleString("en-US");
+      const row = (k: string, v: string) => console.log(`${k.padEnd(11)} ${v}`);
+      if (!graph) row("code map", `✗ not built · run ${cmd("graft build")}`);
+      else if (fresh === false) row("code map", `⚠ ${fmt(graph.meta.nodeCount)} nodes · behind the code, refreshed on the next query`);
+      else row("code map", `✓ ${fmt(graph.meta.nodeCount)} nodes · in sync with the code`);
+      if (hasTrailDir) row(".trail/", `${notes} note${notes === 1 ? "" : "s"} · ${skills} skill${skills === 1 ? "" : "s"}`);
+      if (!link) row("cloud", `not signed in · ${cmd("graft trail connect")}`);
+      else
+        row(
+          "cloud",
+          `linked · ${fmt(rules.length)} rule${rules.length === 1 ? "" : "s"} cached` +
+            (graph && anchored.length ? `, ${fmt(matching)} of ${fmt(anchored.length)} anchored still match the code` : ""),
+        );
+      row("this week", saved > 0 ? `~${shortCount(saved)} tokens saved` : "nothing saved yet");
+    });
+}
+
+if (TRAIL) {
+  // The old `graft trail …` group, at the top level: `trail push`, `trail
+  // login`. `connect` and `watch` still run, unlisted — connect so the
+  // handoff links Trail already sent keep working.
+  for (const c of [loginCommand(), pushCommand(), pullCommand()]) program.addCommand(c.helpGroup(GROUP.cloud));
+  program.addCommand(
+    disconnectCommand("logout").description("Unlink this repo from Trail (its rules stay in the instruction files until the next init)").helpGroup(GROUP.cloud),
+  );
+  program.addCommand(connectCommand(), { hidden: true });
+  program.addCommand(watchCommand(), { hidden: true });
+  program.addCommand(statusCommand().helpGroup(GROUP.setup));
+
+  // `trail trail push` and the rest, for fingers that learned graft.
+  const habit = program.command("trail", { hidden: true }).description("The old graft trail … commands");
+  for (const c of [connectCommand(), pullCommand(), watchCommand(), pushCommand(), statusCommand(), disconnectCommand(), loginCommand()])
+    habit.addCommand(c);
+
+  // Help lists the groups in this order, and the commands within each.
+  const order = ["ask", "grep", "skeleton", "callers", "map", "init", "build", "status", "upgrade", "uninstall", "telemetry", "login", "push", "pull", "logout", "blast"];
+  const rank = (c: Command) => {
+    const i = order.indexOf(c.name());
+    return i === -1 ? order.length : i;
+  };
+  (program.commands as Command[]).sort((a, b) => rank(a) - rank(b));
+
+  // One line each in the list; `trail <command> --help` keeps the long text.
+  const summaries: Record<string, string> = {
+    ask: "ranked answer, with the code inlined at each file:line",
+    grep: "every occurrence, grouped by enclosing symbol",
+    skeleton: "a file's whole API in ~200 tokens",
+    callers: "who calls it, or what it calls with --direction out",
+    map: "directory clusters, hubs and hotspots",
+    init: "wire trail into your agents",
+    build: "rebuild the code map · --check fails if it's stale",
+    status: "code map, notes, cloud link and tokens saved",
+    upgrade: "install the latest trail",
+    uninstall: "remove everything trail or graft wrote to this repo",
+    telemetry: "show or turn off the anonymous usage stats",
+    login: "sign in and link this repo to Trail",
+    push: "send this repo's history to Trail to build its rules",
+    pull: "write changes you accepted in Trail into this repo",
+    logout: "unlink this repo from Trail",
+    blast: "what depends on the lines this diff touched",
+  };
+  for (const c of program.commands) if (summaries[c.name()]) c.summary(summaries[c.name()]!);
+  program.addHelpText("after", "\ntrail <command> --help for flags · every graft command still works");
+} else {
+  // `graft trail …` still works: see legacy-args.ts.
+  const brain = program
+    .command("trail")
+    .description("The Trail attached to this repo: the rules mined from its own history");
+  for (const c of [connectCommand(), pullCommand(), watchCommand(), pushCommand(), brainStatusCommand(), disconnectCommand()])
+    brain.addCommand(c);
+}
 
 program.parseAsync(withLegacyNames(process.argv)).catch((err) => {
   console.error(err instanceof Error ? err.message : err);

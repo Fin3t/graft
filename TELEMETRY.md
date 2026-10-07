@@ -34,6 +34,7 @@ Every event carries only these common properties:
 | `node_major` | `20` | Major version only |
 | `ci` | `false` | Always false — CI never sends (see below) |
 | `agent_host` | `claude-code` / `cursor` / `mcp` / `cli` | Which surface graft ran under |
+| `cli_name` | `trail` / `graft` | Which of the two names started the process (graft is trail's old name) |
 | `repo_id` | a random UUID | See "How it stays anonymous" |
 
 The events:
@@ -72,7 +73,7 @@ An example event, in full:
   "timestamp": "2026-08-21T09:14:22.417Z",
   "properties": {
     "app_version": "0.12.0", "os": "darwin", "arch": "arm64",
-    "node_major": "20", "ci": "false", "agent_host": "claude-code",
+    "node_major": "20", "ci": "false", "agent_host": "claude-code", "cli_name": "trail",
     "repo_id": "6f2c1e90-...", "distinct_id": "b1f3a9c2-...",
     "files_bucket": "200-999", "langs": "go,ts", "mode": "deep",
     "duration_bucket": "30s-2m", "incremental": "true",

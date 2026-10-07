@@ -31,7 +31,8 @@ import { homedir } from 'node:os';
 import { readJson, writeJsonAtomic, cacheDir } from './util/state.js';
 import { HOSTS } from './hosts/registry.js';
 import { START } from './hosts/sections.js';
-import { getNpmViewVersion, readCurrentVersion } from './cli-meta.js';
+import { getNpmViewVersion, readCurrentVersion, readPackageName } from './cli-meta.js';
+import { brand } from './brand.js';
 import { cacheIsStale, markRulesChecked, readLink, readRulesCache } from './brain/link.js';
 import { graftCliPath } from './claude/paths.js';
 
@@ -183,7 +184,7 @@ export function maybeRefreshBrainRules(repo: string, now = Date.now()): boolean 
  * "you're up to date". */
 export function formatUpdateNudge(current: string, latest: string | null | undefined): string | null {
   if (!isNewer(latest, current)) return null;
-  return `⬆ graft ${current} → ${latest} available: run \`npm i -g @nanonets/graft@latest\` (restart your agent after).`;
+  return `⬆ ${brand()} ${current} → ${latest} available: run \`npm i -g ${readPackageName(import.meta.url)}@latest\` (restart your agent after).`;
 }
 
 /* -------------------------------------------------------------------------- */
