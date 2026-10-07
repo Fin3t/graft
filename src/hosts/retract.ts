@@ -27,7 +27,7 @@ import { readFileSync, writeFileSync, existsSync, rmSync, rmdirSync, statSync, r
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { HOSTS } from './registry.js';
-import { ALL_MARKERS, type Markers } from './sections.js';
+import { ALL_MARKERS, TRAIL_MARKERS, type Markers } from './sections.js';
 import { mcpTargets, stripTomlSection } from './mcp-config.js';
 import { hookTargets } from './codex-hooks.js';
 import { antigravitySkillTargets } from './antigravity.js';
@@ -423,12 +423,16 @@ function targets(repo: string, opts: RetractOpts): Target[] {
   // 3. Claude Code: settings fragments, both shims, the skill, and the .mcp.json key.
   if (!exclude.has('claude')) {
     const [settings, statusline, hooks, skill, mcp] = claudeTargets(repo).map((t) => t.path);
+    const claudeMd = join(repo, 'CLAUDE.md');
     for (const t of [
       { hostId: 'claude', path: settings, what: 'statusline + hooks + allowlist + footer regex', scope: 'repo', run: (a) => stripClaudeSettings(settings, a) },
       { hostId: 'claude', path: statusline, what: 'statusline shim', scope: 'repo', run: (a) => removeFile(statusline, a) },
       { hostId: 'claude', path: hooks, what: 'hooks shim', scope: 'repo', run: (a) => removeFile(hooks, a) },
       { hostId: 'claude', path: skill, what: 'graft skill', scope: 'repo', run: (a) => removeFile(skill, a) },
       { hostId: 'claude', path: mcp, what: 'mcpServers.graft', scope: 'repo', run: (a) => removeJsonKey(mcp, 'mcpServers', a) },
+      // The Trail block `trail init` adds to CLAUDE.md. Only that block: the
+      // file is the team's, and .trail/ itself is the team's notes, kept.
+      { hostId: 'claude', path: claudeMd, what: 'Trail block', scope: 'repo', run: (a) => stripSection(claudeMd, a, [TRAIL_MARKERS]) },
     ] as Target[]) add(t);
   }
 

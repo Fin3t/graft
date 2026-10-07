@@ -11,7 +11,7 @@
 import "dotenv/config";
 import { Command } from "commander";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Graft } from "./engine.js";
 import { resolveConfig, type EngineConfig } from "./ai/providers.js";
@@ -21,7 +21,9 @@ import { formatGraphCheckReport } from "./graph/check.js";
 import { buildGraphIfMissing, runInit } from "./claude/init.js";
 import { statuslineWanted } from "./claude/settings-merge.js";
 import { runHostsInit } from "./hosts/init.js";
-import { hostIds } from "./hosts/registry.js";
+import { HOSTS, hostIds } from "./hosts/registry.js";
+import { ensureTrailDir } from "./notes/notes.js";
+import { writeTrailBlocks } from "./notes/instructions.js";
 import { parseBrainArg, connectBrain, pullBrain, brainStatus } from "./brain/connect.js";
 import { rulesForPointers } from "./brain/attach.js";
 import { clearLink, type BrainLink } from "./brain/link.js";
@@ -90,9 +92,13 @@ import { patchBuildConfig, type BuildConfig } from "./util/state.js";
 import { normalizePathPrefix } from "./util/paths.js";
 import { latestSession, formatSessionStats, sessionInputRate } from "./claude/session-metrics.js";
 import { listSessionIds, readSession, sessionDir } from "./claude/state.js";
+import { costLabel, listNotes, renderNote, SECTIONS, sectionLead, shortDate, tokensLabel, writeNote } from "./notes/notes.js";
+import { currentSessionCost } from "./notes/session-cost.js";
+import { changedFiles, currentBranch, noteAuthor } from "./notes/git-facts.js";
 import { setInputRate } from "./context/savings.js";
 import { formatUpdateNudge, maybeRefreshInBackground, readStamp, readUpdateCache, refreshUpdateCache, wiredHostIds, writeStamp } from "./upkeep.js";
 import {
+  countBucket,
   errorCode,
   filesBucket,
   durationBucket,
@@ -124,6 +130,7 @@ const TRAIL = brand() === "trail";
 /** Help-screen groups under trail; graft keeps its one flat list. */
 const GROUP = {
   find: "Find code · your agent runs these:",
+  memory: "Team memory:",
   setup: "Setup:",
   cloud: "Trail cloud:",
   ci: "CI:",
@@ -144,7 +151,7 @@ function grouped(c: Command, heading: string): Command {
  * centrally — and because a command that calls `process.exit` should simply
  * report nothing, which falls out of never emitting until postAction.
  */
-let queryNote: { repo?: string; hit?: "yes" | "no"; command?: string } = {};
+let queryNote: { repo?: string; hit?: "yes" | "no"; command?: string; notes?: string } = {};
 
 /** Record the repo a query ran against, and pass it straight through so call
  *  sites stay one line. */
@@ -315,7 +322,7 @@ program.hook("postAction", (_parent, action) => {
   // `trail build --check` is graft's `check`, and counts as it always has.
   const name = queryNote.command ?? action.name();
   if (!isTrackedCommand(name)) return;
-  track("query", { command: name, surface: "cli", hit: queryNote.hit }, { repo: queryNote.repo });
+  track("query", { command: name, surface: "cli", hit: queryNote.hit, notes: queryNote.notes }, { repo: queryNote.repo });
 });
 
 /** `graft ask`, `graft trail status`: a command as graft spells it, whatever ran it. */
@@ -713,6 +720,8 @@ grouped(program.command("ask"), GROUP.find)
       return;
     }
     noteHit(r.hits.length > 0);
+    // How many teammates' notes reached the agent: the demand side of .trail/.
+    if (r.notesChecked) queryNote.notes = String(Math.min(r.notes?.length ?? 0, 2));
     if (opts.json) {
       console.log(JSON.stringify(r, null, 2));
     } else {
@@ -1050,6 +1059,23 @@ grouped(program.command("map"), GROUP.find)
     process.stdout.write(formatRepoMap(map));
   });
 
+// `trail note`: what a session worked out, saved for the next person. Listed
+// under trail; under graft it still runs, unlisted, for a teammate on graft in
+// a repo where someone else set up trail.
+grouped(program.command("note", { hidden: !TRAIL }), GROUP.memory)
+  .description("Save what this session decided, tried and ruled out, as a note in .trail/notes/ (the note itself on stdin)")
+  .requiredOption("--title <text>", "what the session was about, in a few words")
+  .option("-m, --body <text>", "the note itself, instead of stdin")
+  .option("--touches <list>", "comma-separated files or file#Symbol it's about (default: the files this session changed)")
+  .option("--author <name>", "who wrote it (default: the first word of git config user.name)")
+  .option("--minutes <n>", "what it took to work out, when the agent's transcript can't say")
+  .option("--tokens <n>", "the same, in tokens")
+  .option("--json", "print the saved note as JSON")
+  .argument("[dir]", "repository root", ".")
+  .action(async (dir: string, opts: { title: string; body?: string; touches?: string; author?: string; minutes?: string; tokens?: string; json?: boolean }) => {
+    await runNoteCommand(resolve(dir), opts);
+  });
+
 grouped(program.command("init"), GROUP.setup)
   .description(
     TRAIL
@@ -1073,6 +1099,81 @@ grouped(program.command("init"), GROUP.setup)
   .action(async (dir: string, opts: InitOptions) => {
     await runInitCommand(dir, opts);
   });
+
+/** Everything on stdin, or "" when nothing is piped in. */
+async function readStdin(): Promise<string> {
+  if (process.stdin.isTTY) return "";
+  const chunks: Buffer[] = [];
+  for await (const c of process.stdin) chunks.push(typeof c === "string" ? Buffer.from(c) : c);
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function runNoteCommand(
+  repo: string,
+  opts: { title: string; body?: string; touches?: string; author?: string; minutes?: string; tokens?: string; json?: boolean },
+): Promise<void> {
+  const body = (opts.body ?? (await readStdin())).trim();
+  if (!opts.title.trim() || !body) {
+    console.error(`✗ a note needs a --title and a body, on stdin or with -m:`);
+    console.error(`  ${cmd("graft note")} --title "What it was about" <<'EOF'`);
+    console.error("  ## Decided\n  …\n  ## Tried and ruled out\n  …\n  ## Watch out\n  …\n  EOF");
+    process.exitCode = 1;
+    return;
+  }
+  const wholeNumber = (raw: string | undefined, flag: string): number | undefined => {
+    if (raw === undefined) return undefined;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) {
+      console.error(`✗ ${flag} takes a number, got "${raw}"`);
+      process.exit(1);
+    }
+    return Math.round(n);
+  };
+  const minutes = wholeNumber(opts.minutes, "--minutes");
+  const tokens = wholeNumber(opts.tokens, "--tokens");
+  // What the session spent, from the agent's own transcript when there is one;
+  // the flags win, since only the agent knows where its task began.
+  const spent = currentSessionCost(repo);
+  const cost =
+    minutes !== undefined || tokens !== undefined || spent
+      ? { minutes: minutes ?? spent?.minutes, tokens: tokens ?? spent?.tokens }
+      : undefined;
+  const touches = opts.touches
+    ? opts.touches.split(",").map((t) => t.trim()).filter(Boolean)
+    : changedFiles(repo, spent?.startedAt);
+  const earlier = listNotes(repo);
+  const note = writeNote(repo, {
+    title: opts.title,
+    body,
+    author: opts.author?.trim() || noteAuthor(repo),
+    date: new Date().toISOString().slice(0, 10),
+    branch: currentBranch(repo),
+    cost,
+    touches,
+  });
+  track("note_saved", { has_cost: String(cost?.tokens !== undefined || cost?.minutes !== undefined), touches_bucket: countBucket(touches.length) }, { repo });
+
+  if (opts.json) {
+    console.log(JSON.stringify(note, null, 2));
+    return;
+  }
+  console.log(`✓ note saved · ${note.path}`);
+  const took = costLabel(note.cost);
+  if (took) {
+    // Name a code file if the note touches one; docs are rarely what it's about.
+    const about = touches.find((t) => !/\.(md|mdx|txt)$/i.test(t.split("#")[0]!)) ?? touches[0];
+    const first = about ? ` who touches ${basename(about.split("#")[0]!)}` : "";
+    const reading = tokensLabel(Math.ceil(renderNote(note).length / 4)).replace(" tokens", "");
+    console.log(`· this ${took.replace(" to work out", " to figure out")}. the next person${first} gets it for ${reading}`);
+  }
+  // Notes about the same files, from someone else: this one builds on theirs.
+  const files = new Set(touches.map((t) => t.split("#")[0]));
+  const prior = earlier.find((n) => n.author !== note.author && n.touches.some((t) => files.has(t.split("#")[0])));
+  if (prior) console.log(`· builds on ${prior.author ? `${prior.author}'s` : "a"} note from ${shortDate(prior.date)}`);
+  if (!SECTIONS.some((s) => sectionLead(body, s.heading) !== null))
+    console.log("· tip: notes read best under ## Decided, ## Tried and ruled out and ## Watch out");
+  console.log("· commit .trail/ so your team gets this");
+}
 
 /** `graft init`'s flags, as commander hands them over. */
 interface InitOptions { build?: boolean; agents?: string[]; allAgents?: boolean; listAgents?: boolean; mcp?: boolean; hooks?: boolean; statusline?: boolean; dryRun?: boolean; yes?: boolean; global?: boolean; trail?: string; verbose?: boolean }
@@ -1254,6 +1355,33 @@ async function runInitCommand(
       }
     }
 
+    // Under trail: the team's notes folder, and the block that tells every
+    // agent to read it first and leave a note when done. In each repo of a
+    // workspace, since each is committed on its own.
+    let trailCommit: string[] = [];
+    if (TRAIL) {
+      const sectionFiles = [...new Set(HOSTS.filter((h) => ids.includes(h.id) && h.kind === "section").map((h) => h.relPath))];
+      for (const target of targets) {
+        const { created } = ensureTrailDir(target);
+        const writes = writeTrailBlocks(target, { claude: wantClaude, files: sectionFiles });
+        if (target !== repo) continue;
+        const notes = listNotes(repo);
+        const skills = countDirs(join(repo, ".trail", "skills"));
+        if (created || notes.length === 0) {
+          console.error("✓ .trail/    ready · every session you finish leaves a short note here");
+        } else {
+          const authors = [...new Set(notes.map((n) => n.author).filter(Boolean))];
+          const from = authors.length ? ` from ${joinAnd(authors.length > 3 ? [...authors.slice(0, 2), `${authors.length - 2} others`] : authors)}` : "";
+          console.error(`✓ .trail/    ${notes.length} note${notes.length === 1 ? "" : "s"}${from}${skills ? ` · ${skills} skill${skills === 1 ? "" : "s"}` : ""}`);
+        }
+        for (const w of writes) {
+          if (w.action === "unchanged") continue;
+          console.error(`✓ ${shown(repo, w.path).padEnd(10)} Trail block ${w.action === "replaced" ? "updated" : "added"}: check .trail/ before exploring`);
+        }
+        trailCommit = [".trail/", ...writes.map((w) => shown(repo, w.path))];
+      }
+    }
+
     // The brain comes last, after the graph exists: its rules are anchored to
     // symbols, and `graft trail status` can only report how many of them resolve
     // once there is a graph to resolve them against.
@@ -1278,7 +1406,7 @@ async function runInitCommand(
 
     if (!verbose && how.epilogue !== false) {
       // What there is to commit: the top-level entries the picked agents wrote.
-      const tops: string[] = [];
+      const tops: string[] = [...trailCommit];
       for (const w of selectedWrites(plan, ids)) {
         if (w.scope !== "repo") continue;
         const parts = shown(repo, w.path).split("/");
@@ -1287,7 +1415,10 @@ async function runInitCommand(
       }
       console.error(`· restart your agents so a new session picks up ${brand()}`);
       if (tops.length)
-        console.error(`· commit ${tops.slice(0, 4).join(" ")}${tops.length > 4 ? ` +${tops.length - 4} more` : ""} to share it — graft/ stays local and git-ignored`);
+        console.error(
+          `· commit ${tops.slice(0, 4).join(" ")}${tops.length > 4 ? ` +${tops.length - 4} more` : ""} to share it — ` +
+            (TRAIL ? "the code map in graft/ stays on this machine, .trail/ is meant to be committed" : "graft/ stays local and git-ignored"),
+        );
     }
 
     // One epilogue for the whole run. A workspace parent holds no nodes of its
@@ -2150,7 +2281,7 @@ if (TRAIL) {
     habit.addCommand(c);
 
   // Help lists the groups in this order, and the commands within each.
-  const order = ["ask", "grep", "skeleton", "callers", "map", "init", "build", "status", "upgrade", "uninstall", "telemetry", "login", "push", "pull", "logout", "blast"];
+  const order = ["ask", "grep", "skeleton", "callers", "map", "note", "init", "build", "status", "upgrade", "uninstall", "telemetry", "login", "push", "pull", "logout", "blast"];
   const rank = (c: Command) => {
     const i = order.indexOf(c.name());
     return i === -1 ? order.length : i;
@@ -2164,6 +2295,7 @@ if (TRAIL) {
     skeleton: "a file's whole API in ~200 tokens",
     callers: "who calls it, or what it calls with --direction out",
     map: "directory clusters, hubs and hotspots",
+    note: "save what this session decided, tried and ruled out",
     init: "wire trail into your agents",
     build: "rebuild the code map · --check fails if it's stale",
     status: "code map, notes, cloud link and tokens saved",

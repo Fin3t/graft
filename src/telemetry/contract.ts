@@ -50,7 +50,7 @@ export const EVENTS: Record<string, ReadonlySet<string>> = {
   /** A build threw. `stage`/`code` are enums; the message never travels. */
   build_failed: new Set<string>(['stage', 'code']),
   /** One query, from any surface. The DAU backbone and the dead-command detector. */
-  query: new Set<string>(['command', 'surface', 'hit']),
+  query: new Set<string>(['command', 'surface', 'hit', 'notes']),
   /** `graft trail push` in a repo with no brain, sending the user to Trail to
    *  make one. Queued the moment the link is printed, so a signup somebody
    *  walked away from is still counted — the settle below never fires for those,
@@ -74,6 +74,11 @@ export const EVENTS: Record<string, ReadonlySet<string>> = {
    *  `skipped` with a `reason` from a closed set (TRAIL_AUTOPUSH_SKIPS). Only for
    *  a repo with a trail attached — every other repo sends nothing. */
   trail_autopush: new Set<string>(['outcome', 'reason']),
+  /** `trail note` saved a session note into `.trail/notes/`. Whether it carries
+   *  a cost, and how many files it is about, as a bucket. The title, the text
+   *  and the paths never travel. The supply side of the notes loop; the
+   *  `notes` property on `query` is the demand side. */
+  note_saved: new Set<string>(['has_cost', 'touches_bucket']),
   /** One closed agent session, summarised. `graft_reads` vs `source_reads` is
    *  the single number that says whether an agent prefers graft to grep; the two
    *  `*_turns` buckets are the follow-up question — of the turns that used graft,

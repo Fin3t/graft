@@ -12,6 +12,7 @@ const FOOTER = 'graft/[\\w./-]+\\.md';
 // from a checkout), where the binary is not on PATH under that name. A retrieval
 // call that raises a permission prompt loses to grep, which never does.
 const ALLOW_ENTRIES = [
+  'Bash(trail:*)',
   'Bash(graft:*)',
   'Bash(npx graft:*)',
   'Bash(graft-dev:*)',
@@ -66,7 +67,7 @@ function graftBlocks(helpers?: string): Record<string, Json[]> {
  * upgrade instead of accumulating beside its replacement.
  */
 export function isGraftAllowEntry(entry: unknown): boolean {
-  return /^Bash\((?:graft|npx graft|graft-dev|node dist\/cli\.js)(?::|\))/.test(String(entry));
+  return /^Bash\((?:trail|graft|npx graft|graft-dev|node dist\/cli\.js)(?::|\))/.test(String(entry));
 }
 
 /** Is this footer regex graft's? It points at the card tree, which is graft's alone. */
