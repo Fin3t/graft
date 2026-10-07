@@ -45,3 +45,26 @@ MonoBehaviour:
 Animator:
   m_GameObject: {fileID: 10}
   m_Controller: {fileID: 9100000, guid: ddddddddddddddddddddddddddddddd1, type: 2}
+--- !u!114 &15
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_GameObject: {fileID: 10}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: 7a5ac11cc9f6d4b1fbd4b0fb4bf3e2d6, type: 3}
+  m_Name: 
+  m_LayerMask:
+    serializedVersion: 2
+    m_Bits: 512
+--- !u!1001 &500
+PrefabInstance:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Modification:
+    serializedVersion: 3
+    m_TransformParent: {fileID: 0}
+    m_Modifications:
+    - target: {fileID: 200, guid: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb1, type: 3}
+      propertyPath: m_Name
+      value: Walker (1)
+      objectReference: {fileID: 0}
+  m_SourcePrefab: {fileID: 100100000, guid: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb1, type: 3}

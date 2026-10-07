@@ -61,6 +61,11 @@ export interface GrepResult {
   /** Tokens-saved baseline: the files that had hits, read whole. Undefined
    * when there were no hits or the graph predates file sizing. */
   saved?: Savings;
+  /** Symbols whose engine entry (NodeV1.entry — a `[MenuItem]` path, an
+   * `-executeMethod` target, a Unity message…) matches the pattern: the code a
+   * menu path or a batch command actually runs, which the text hit (an attribute
+   * string, a comment) only names. Absent when none match. */
+  entries?: Array<{ symbol: GrepSymbolRef; entry: string }>;
 }
 
 export interface GrepOptions {
@@ -203,6 +208,9 @@ export function grepGraph(graph: GraphV1, repoRoot: string, pattern: string, opt
   }
 
   const sortedGroups = [...groups.values()].sort((a, b) => b.inDegree - a.inDegree || a.path.localeCompare(b.path));
+  const entries = graph.nodes
+    .filter((n) => n.entry && regex.test(n.entry) && (inPrefix === undefined || pathUnderPrefix(n.path, inPrefix)))
+    .map((n) => ({ symbol: toSymbolRef(n), entry: n.entry! }));
 
   return {
     pattern,
@@ -211,5 +219,6 @@ export function grepGraph(graph: GraphV1, repoRoot: string, pattern: string, opt
     groups: sortedGroups,
     truncated: { files: truncatedFiles, hits: truncatedHits },
     saved: savingsFor(graph, sortedGroups.map((g) => g.path)),
+    ...(entries.length ? { entries } : {}),
   };
 }

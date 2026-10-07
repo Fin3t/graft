@@ -23,5 +23,7 @@ namespace Game
             SendMessage("Footstep");
         }
         void Later() { }
+        void Again() { SceneManager.LoadSceneAsync(0); var (w, n) = Pick(); w.Footstep(); }
+        (Walker, int) Pick() => (null, 0);
     }
 }

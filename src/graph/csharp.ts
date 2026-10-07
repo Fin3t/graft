@@ -60,6 +60,7 @@ import type { Kind, NodeV1, Relation } from "./types.js";
  *                             `as`, a declared local, a literal)
  *   ["a", inner]              `await inner` (Task<T> → T)
  *   ["g", inner]              a method group (`AddListener(Play)`, `+= OnHit`)
+ *   ["tu", recv, i]           element i of a tuple (`var (a, b) = Pair()`)
  */
 export type Expr =
   | ["i", string]
@@ -74,7 +75,8 @@ export type Expr =
   | ["dv", Expr]
   | ["T", string]
   | ["a", Expr]
-  | ["g", Expr];
+  | ["g", Expr]
+  | ["tu", Expr, number];
 
 /** One piece of a string value: a literal, a reference to a constant/static field
  * whose value the resolver knows, or null for anything computed at run time. */
@@ -784,7 +786,10 @@ function pushNode(
   idPart = name,
 ): string {
   const id = mint(`${ctx.rel}#${[...w.scope, idPart].join(".")}`, ctx.minted);
+  // A `///` or `//` block right above a declaration describes it: search it with
+  // the declaration (span and hash stay the declaration's own).
   const text = node.text;
+  const doc = leadingComments(node);
   ctx.nodes.push({
     id,
     name,
@@ -795,7 +800,7 @@ function pushNode(
     exported: false,
     origin: "ast",
     body_hash: contentHash(text),
-    body_text: searchBody(text),
+    body_text: searchBody(doc ? `${doc}\n${text}` : text),
     summary_state: "pending",
     summary: null,
     crux: null,
@@ -804,6 +809,19 @@ function pushNode(
   });
   ctx.edges.push({ source: w.parentId, relation: "contains", targetId: id, file: ctx.rel });
   return id;
+}
+
+/** The comment block directly above a declaration (no blank line in between). */
+function leadingComments(n: TsNode): string {
+  const parts: string[] = [];
+  let row = n.startPosition.row;
+  let p = (n as unknown as { previousSibling: TsNode | null }).previousSibling;
+  while (p && p.type === "comment" && row - p.endPosition.row <= 1) {
+    parts.unshift(p.text);
+    row = p.startPosition.row;
+    p = (p as unknown as { previousSibling: TsNode | null }).previousSibling;
+  }
+  return parts.join("\n").replace(/^\s*\/\/\/?\s?|<\/?\w+[^>]*>/gm, "").trim();
 }
 
 function emitType(n: TsNode, ctx: Ctx, w: Where): void {
@@ -1021,6 +1039,12 @@ function emitProperty(m: TsNode, ctx: Ctx, w: Where, inInterface: boolean): void
   if (attrs.length) fact.attrs = attrs;
   // `[field: SerializeField] public T X { get; private set; }` serializes the backing field.
   if (attrs.some((a) => a.n === "SerializeField" || a.n === "SerializeReference") && !mods.has("static")) fact.serialized = true;
+  // `string Clip => Folder + Id;` — a computed name the resolver can still read a prefix of
+  const valueExpr = value?.namedChildren[0] ?? (accessors?.namedChildren.length === 1 ? accessors.namedChildren[0].childForFieldName("body")?.namedChildren[0] : undefined);
+  if (valueExpr && (type === "string" || type === "String")) {
+    const sv = strValues(valueExpr.type === "return_statement" ? (valueExpr.namedChildren[0] ?? null) : valueExpr, null);
+    if (sv.some((v) => v.some((p) => typeof p === "string" || Array.isArray(p)))) fact.sv = sv;
+  }
   ctx.facts.members.push(fact);
   const inner: Where = { ...w, scope: [...w.scope, name], parentId: id, memberId: id };
   const env: Env = { vars: new Map(), parent: null };
@@ -1380,6 +1404,8 @@ function strValues(n: TsNode | null, env: Env | null, depth = 0): StrVal[] {
       if (v !== undefined) return [[null]]; // a local: value unknown statically
       return [[["r", ["i", n.text]]]];
     }
+    case "integer_literal":
+      return [[`#${n.text}`]]; // `LoadScene(0)`: a build index, marked so it is never read as a name
     case "member_access_expression": {
       const e = ir(n, env);
       return e ? [[["r", e]]] : [[null]];
@@ -1451,8 +1477,16 @@ function walkBody(n: TsNode, ctx: Ctx, w: Where, env: Env, source: string, ret?:
       if (t) typeRef(ctx, w, source, t);
       for (const d of decl.namedChildren) {
         if (d.type !== "variable_declarator") continue;
-        const name = d.childForFieldName("name")?.text.replace(/^@/, "") ?? d.namedChildren[0]?.text;
+        const tuple = d.namedChildren[0]?.type === "tuple_pattern" ? d.namedChildren[0] : null;
+        const name = tuple ? null : (d.childForFieldName("name")?.text.replace(/^@/, "") ?? d.namedChildren[0]?.text);
         const init = d.namedChildren.find((c, i) => i > 0 && c.type !== "bracketed_argument_list");
+        if (tuple) {
+          // `var (boss, kit) = Boss(…)`: each name is an element of the tuple
+          if (init) walkBody(init, ctx, w, env, source, ret);
+          const r = init ? ir(init, env) : null;
+          tuple.namedChildren.filter((c) => c.type === "identifier").forEach((c, i) => env.vars.set(c.text, r ? ["tu", r, i] : null));
+          continue;
+        }
         if (init) {
           if (init.type === "implicit_object_creation_expression" && t) {
             intent(ctx, w, source, "calls", { e: ["n", t, argCount(init)] });
@@ -1708,7 +1742,17 @@ function walkBody(n: TsNode, ctx: Ctx, w: Where, env: Env, source: string, ret?:
       return;
     }
     case "string_literal":
-    case "verbatim_string_literal":
+    case "verbatim_string_literal": {
+      // "Assets/…" / "Packages/…" names a project asset or folder outright
+      const v = stringLiteral(n);
+      if (v && /^(Assets|Packages|ProjectSettings)\/./.test(v) && !insideUnityOp(n)) unityIntent(ctx, w, source, { op: "path", args: [[[v]]] });
+      return;
+    }
+    case "interpolated_string_expression": {
+      const vals = strValues(n, env);
+      if (vals.some((sv) => typeof sv[0] === "string" && /^(Assets|Packages|ProjectSettings)\/./.test(sv[0])) && !insideUnityOp(n)) unityIntent(ctx, w, source, { op: "path", args: [vals] });
+      return walkChildren(n, ctx, w, env, source, ret);
+    }
     case "integer_literal":
     case "real_literal":
     case "boolean_literal":
@@ -1720,6 +1764,17 @@ function walkBody(n: TsNode, ctx: Ctx, w: Where, env: Env, source: string, ret?:
     default:
       return walkChildren(n, ctx, w, env, source, ret);
   }
+}
+
+/** Is this literal an argument of a call the Unity string-ops already cover? */
+function insideUnityOp(n: TsNode): boolean {
+  const arg = n.parent;
+  const call = arg?.type === "argument" ? arg.parent?.parent : null;
+  if (call?.type !== "invocation_expression") return false;
+  const fn = call.childForFieldName("function");
+  const nameNode = fn?.type === "member_access_expression" ? fn.childForFieldName("name") : fn;
+  const name = nameNode?.type === "generic_name" ? nameNode.namedChildren[0]?.text : nameNode?.text;
+  return !!name && UNITY_STRING_OPS.has(name);
 }
 
 function walkChildren(n: TsNode, ctx: Ctx, w: Where, env: Env, source: string, ret?: Expr): void {
@@ -1853,6 +1908,9 @@ function visitInvocation(n: TsNode, ctx: Ctx, w: Where, env: Env, source: string
       if (action && binding) {
         action.signature = `${action.signature ?? ""} | ${binding}`;
         action.body_text = searchBody(`${action.body_text ?? ""} ${binding}`);
+        const m = /^L(\d+)-L(\d+)$/.exec(action.span);
+        const line = n.endPosition.row + 1;
+        if (m && Number(m[1]) <= line && line - Number(m[2]) < 40 && line > Number(m[2])) action.span = `L${m[1]}-L${line}`;
       }
     }
   }

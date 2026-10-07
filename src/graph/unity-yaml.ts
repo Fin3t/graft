@@ -52,6 +52,8 @@ export interface UDoc {
   props: Record<string, string>;
   refs: URef[];
   items: UItem[];
+  /** Serialized LayerMasks: `<path>.m_Bits: N` (path without `.m_Bits`). */
+  masks?: Array<{ path: string; bits: number; line: number }>;
 }
 
 /** Sequences whose items extractors read. Matched on the LAST path segment. */
@@ -221,6 +223,7 @@ export function scanUnityYaml(text: string, want: ReadonlySet<number> | null = n
         const rel = path.split(".").slice(curItemDepth).join(".");
         if (value) curItem.v[rel] = value;
       }
+      if (key === "m_Bits" && value) (doc.masks ??= []).push({ path: parentPath, bits: Number(value), line: ln });
       if (value.includes("{fileID:")) collectRefs(doc, path, value, curItemIdx, ln, key);
       if (!value || value === "|" || value === ">") {
         stackIndent.push(eff);

@@ -38,7 +38,8 @@ const DEFAULT_DEPTH = 1;
  * surfaces walk the same edges via the same `resolveSymbol` / `edgeWalk` core. */
 export function headerOf(n: NodeV1): string {
   const pkg = n.pkg ? ` · package ${n.pkg} (third-party)` : "";
-  const head = `${n.name} · ${n.kind} · ${n.path}:${n.span}${pkg}`;
+  const asm = n.asm ? ` · assembly ${n.asm}` : "";
+  const head = `${n.name} · ${n.kind} · ${n.path}:${n.span}${pkg}${asm}`;
   // Called by the engine / an editor / the test runner rather than by repo code:
   // say so up front, so an empty callers list never reads as dead code.
   return n.entry ? `${head}\n  ⚙ ${n.entry}` : head;
@@ -56,7 +57,12 @@ export function hitLine(direction: Direction, hit: EdgeHit, showDepth: boolean, 
   const depthTag = showDepth ? ` [depth ${hit.depth}]` : "";
   // A scene/prefab component is named after its GameObject ("Window A"); its
   // hierarchy path ("Shell/Section 2/Window A") is what tells two of them apart.
-  const display = hit.node?.kind === "component" ? (/ on "(.*)"$/.exec(hit.node.signature ?? "")?.[1] ?? hit.node.name) : hit.node?.name;
+  const display =
+    hit.node?.kind === "component"
+      ? (/ on "(.*?)"( · .*)?$/.exec(hit.node.signature ?? "")?.slice(1, 3).join("") ?? hit.node.name)
+      : hit.node?.kind === "file" && / of (Assets|Packages)\//.test(hit.node.signature ?? "")
+        ? `${hit.node.name} — ${hit.node.signature}`
+        : hit.node?.name;
   const label = hit.node
     ? `${display} (${hit.node.path}:${hit.node.span})${hit.node.pkg ? ` [package ${hit.node.pkg}]` : ""}`
     : `${hit.id} (${hit.relation === "imports" ? "unresolved import" : "outside the repo"})`;

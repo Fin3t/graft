@@ -39,7 +39,7 @@ export type UnityIntent =
   | { k: "call"; type?: string; method: string; via: string; script?: string } // invokes (UnityEvent)
   | { k: "animevent"; fn: string; clip?: string } // invokes (AnimationEvent)
   | { k: "tag"; name: string } // references a tag
-  | { k: "layer"; index?: number; name?: string } // references a layer
+  | { k: "layer"; index?: number; name?: string; via?: string } // references a layer
   | { k: "include"; path: string } // imports (shader include, uss/uxml import)
   | { k: "asmref"; ref: string; rel: "imports" | "compiles" } // assembly reference
   | { k: "scene"; guid?: string; path: string; via: string }; // EditorBuildSettings → scene
@@ -478,6 +478,7 @@ function extractSceneOrPrefab(rel: string, source: string, o: Out, kind: "scene"
       const ctrl = d.refs.find((r) => r.path === "m_Controller");
       animators.push({ go: src, controller: ctrl?.guid ? { guid: ctrl.guid, fid: ctrl.fid } : undefined, scripts: [] });
     }
+    layerMaskRefs(d, src, o);
     // UnityEvent persistent calls
     callRefs.clear();
     for (const c of itemsOf(d, "m_Calls")) {
@@ -607,6 +608,8 @@ function extractYamlAsset(rel: string, source: string, o: Out, kind: string): Un
   }
 
   for (const d of docs) {
+    if (d !== main && d.name) bodyParts.push(d.name); // sub-objects: renderer features, volume overrides, timeline tracks
+    layerMaskRefs(d, rel, o);
     if (d === main && d.classId === MONOBEHAVIOUR) {
       const script = parseRef(d.props.m_Script);
       const cls = classIdentifier(d);
@@ -650,6 +653,17 @@ function extractYamlAsset(rel: string, source: string, o: Out, kind: string): Un
   }
   o.nodes.unshift(fileNode(rel, source, sig, `${sig} ${bodyParts.join(" ")} ${base}`));
   return { asset };
+}
+
+/** `m_LayerMask: { serializedVersion: 2, m_Bits: 512 }` and the like: a serialized
+ * LayerMask names layers by bit. Each set bit references that layer. */
+function layerMaskRefs(d: UDoc, source: string, o: Out): void {
+  for (const m of d.masks ?? []) emitBits(m.bits, `${d.name ? `${d.name}.` : ""}${m.path}`, source, o);
+}
+
+function emitBits(bits: number, via: string, source: string, o: Out): void {
+  if (!bits || bits === 0xffffffff || bits < 0) return;
+  for (let i = 0; i < 32; i++) if (bits & (1 << i)) intent(o, source, "references", { k: "layer", index: i, via } as UnityIntent);
 }
 
 // ── Animator controllers ────────────────────────────────────────────────────
@@ -773,7 +787,11 @@ function extractInputActions(rel: string, source: string, o: Out): UnityFacts {
     return from;
   };
   const maps: Array<{ name: string; actions: string[] }> = [];
-  const sig = `InputActionAsset "${json.name ?? basename(rel, ".inputactions")}" (${(json.maps ?? []).map((m) => m.name).join(", ")})`;
+  // The whole asset at a glance: maps, actions and their bindings.
+  const overview = (json.maps ?? [])
+    .map((m) => `${m.name}: ${(m.actions ?? []).map((a) => `${a.name} [${(m.bindings ?? []).filter((b) => b.action === a.name && b.path).map((b) => b.path).join(", ")}]`).join("; ")}`)
+    .join(" | ");
+  const sig = `InputActionAsset "${json.name ?? basename(rel, ".inputactions")}" — ${overview.length > 1200 ? `${overview.slice(0, 1200)}…` : overview}`;
   o.nodes.push(fileNode(rel, source, sig, `${sig} ${(json.controlSchemes ?? []).map((c) => c.name).join(" ")}`));
   let cursor = 0;
   for (const m of json.maps ?? []) {
@@ -817,7 +835,8 @@ function extractAsmdef(rel: string, source: string, o: Out, kind: string): Unity
   const name = json.name ?? basename(rel, ".asmdef");
   const editor = !!json.includePlatforms?.length && json.includePlatforms.every((p) => p === "Editor");
   const test = !!(json.defineConstraints?.includes("UNITY_INCLUDE_TESTS") || json.optionalUnityReferences?.includes("TestAssemblies") || json.precompiledReferences?.includes("nunit.framework.dll"));
-  const sig = `assembly ${name}${editor ? " (Editor)" : ""}${test ? " (tests)" : ""}${json.rootNamespace ? ` namespace ${json.rootNamespace}` : ""}`;
+  const conds = [...(json.defineConstraints ?? []), ...((json as { versionDefines?: Array<{ name?: string; define?: string }> }).versionDefines ?? []).map((v) => `${v.define} (when ${v.name})`)];
+  const sig = `assembly ${name}${editor ? " (Editor)" : ""}${test ? " (tests)" : ""}${json.rootNamespace ? ` namespace ${json.rootNamespace}` : ""}${conds.length ? ` · compiled only with ${conds.join(", ")}` : ""}`;
   o.nodes.push(fileNode(rel, source, sig, `${sig} references ${(json.references ?? []).join(" ")}`));
   const id = addNode(o, name, name, "module", 0, source.split("\n").length - 1, sig, `${sig} ${(json.references ?? []).join(" ")}`);
   for (const r of json.references ?? []) intent(o, id, "imports", { k: "asmref", ref: r, rel: "imports" });

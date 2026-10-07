@@ -452,6 +452,13 @@ export function resolveCSharp(
       }
       if (count === 1) return found;
       if (count > 1) return null; // ambiguous between usings
+      // `using static T;` also imports T's nested types
+      const statics = i === chain.length - 1 ? [...scope.statics, ...globalStatics] : scope.statics;
+      for (const st of statics) {
+        const owner = resolveTypeText({ ...sc, u: scope.parent >= 0 ? scope.parent : 0, type: null }, st, 1);
+        const r = owner ? nestedIn(owner, name, arity, args) : null;
+        if (r) return r;
+      }
     }
     if (arity === 0 && apiNamespaces.has(name)) return { ns: name };
     return null;
@@ -471,7 +478,8 @@ export function resolveCSharp(
   function resolveSyntax(sc: Scope, syn: TypeSyntax, depth: number): TypeValue | null {
     let tv: TypeValue | null = null;
     if (syn.tuple) {
-      tv = { k: "ex", fqn: `System.ValueTuple\`${syn.tuple.length}`, args: [] };
+      const els = syn.tuple.map((t) => resolveSyntax(sc, t, depth + 1) ?? ({ k: "ex", fqn: "?", args: [] } as TypeValue));
+      tv = { k: "ex", fqn: `System.ValueTuple\`${syn.tuple.length}`, args: els };
     } else {
       const first = syn.parts[0];
       const pre = syn.parts.length === 1 && first.args.length === 0 ? PREDEFINED[first.n] : undefined;
@@ -845,6 +853,14 @@ export function resolveCSharp(
       }
       case "g":
         return evalExpr(sc, e[1], depth + 1);
+      case "tu": {
+        const r = evalExpr(sc, e[1], depth + 1);
+        if (!r || r.k !== "val" || !r.tv) return null;
+        const tv = r.tv;
+        if (tv.k === "ex" && /^System\.ValueTuple`\d+$/.test(tv.fqn)) return { k: "val", tv: tv.args[e[2]] ?? null };
+        if (tv.k === "ex" && tv.fqn === "System.Collections.Generic.KeyValuePair`2") return { k: "val", tv: tv.args[e[2]] ?? null };
+        return null;
+      }
     }
     return null;
   }
@@ -958,6 +974,10 @@ export function resolveCSharp(
         // unknown receiver: a uniquely-named in-repo extension method still matches
         const ext = extensionsFor(null, name);
         if (ext.length) group = { k: "group", members: ext, recv: null, isStatic: false };
+      }
+      // `x.GetComponent<T>()` is a T whatever x is — even when x itself is untyped
+      if (!group && targs.length && (RETURNS_TARG.has(name) || RETURNS_TARG_ARRAY.has(name)) && !recvTv) {
+        return { k: "val", tv: RETURNS_TARG.has(name) ? targs[0] : { k: "arr", el: targs[0] } };
       }
       // special forms the API may not carry
       if (!group && (r?.k === "val" || r?.k === "type") && recvTv) {

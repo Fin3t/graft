@@ -203,6 +203,11 @@ export function isTestPath(path: string): boolean {
   return /(^|\/)(tests?|__tests__|spec)\/|(_test|\.test|\.spec)\.[a-z]+$|(^|\/)(test_[^/]+|conftest)\.py$/i.test(path || "");
 }
 const TEST_RANK_PENALTY = 0.35;
+/** A node minted for an asset graft does not parse (texture, mesh, folder,
+ * package asset) — findable by name, but never ahead of code on equal terms. */
+const ASSET_RANK_PENALTY = 0.4;
+/** Third-party code vendored into the repo as a package (`NodeV1.pkg`). */
+const PACKAGE_RANK_PENALTY = 0.6;
 
 function score(
   query: Map<string, number>,
@@ -512,6 +517,11 @@ function lexical(
   // source it exercises — the "tests ranked above the actual code" trap.
   const wantsTests = /\b(tests?|specs?|coverage|assert(?:ion)?s?|fixtures?|mocks?)\b/i.test(query);
   const testFactor = (path: string): number => (!wantsTests && isTestPath(path) ? TEST_RANK_PENALTY : 1);
+  // Nodes that are not the repo's own source rank below it on equal terms: an
+  // asset known only through its `.meta` (a texture whose name happens to share
+  // the query's words) and third-party code vendored as a package.
+  const nodeFactor = (n: NodeV1 | undefined): number =>
+    !n ? 1 : (n.kind === "asset" ? ASSET_RANK_PENALTY : 1) * (n.pkg ? PACKAGE_RANK_PENALTY : 1);
 
   // ── Pass 1: tokenize every scored field once, and collect per-document token
   // bags so IDF can down-weight words that occur across the whole corpus. `--in`
@@ -735,7 +745,7 @@ function lexical(
           // per-scope now; the statistics are global.
           const out = new Map<string, number>();
           for (const { n, name, path, body } of docs) {
-            const factor = testFactor(n.path);
+            const factor = testFactor(n.path) * nodeFactor(n);
             const total =
               (score(q, name, idf) * 3 +
                 score(q, path, idf) * 2 +
@@ -771,7 +781,7 @@ function lexical(
             ? personalizedPageRankPrepared(topology, seeds)
             : new Map<string, number>();
         },
-        rankFactor: (_s, id) => testFactor(byId.get(id)?.path ?? ""),
+        rankFactor: (_s, id) => testFactor(byId.get(id)?.path ?? "") * nodeFactor(byId.get(id)),
         collapseCandidates: fileComplement
           ? (candidates) => {
               collapsedComponents = [...candidates];
@@ -918,7 +928,7 @@ function lexical(
   for (const { n, name, path, body } of symbolDocs) {
     // Name and path are short identifiers → plain idf-weighted overlap; the body
     // is length-normalized via BM25 so long definitions don't win on bulk.
-    const factor = testFactor(n.path);
+    const factor = testFactor(n.path) * nodeFactor(n);
     const total =
       (score(q, name, idf) * 3 +
         score(q, path, idf) * 2 +
@@ -965,7 +975,7 @@ function lexical(
     if (!n) continue;
     const lexical = maxLex > 0 ? (lex.get(id) ?? 0) / maxLex : 0;
     const graphScore = pr.get(id) ?? 0;
-    const rankFactor = testFactor(n.path);
+    const rankFactor = testFactor(n.path) * nodeFactor(n);
     // Apply the test penalty after normalization too. Applying it only to the
     // raw lexical score is not enough: if a test is still the strongest raw
     // match, dividing by maxLex restores it to 1.0 and erases the de-rank.

@@ -192,7 +192,15 @@ export function resolveUnity(
       const cands = cs.typesNamed(short).filter((t) => cs.fqnOf({ k: "in", t, args: [] }) === cls);
       if (cands.length === 1) r = cands[0].id;
     }
-    if (!r && guid && pkgs[guid]?.cls) r = pkgs[guid].cls!;
+    if (!r && guid && pkgs[guid]?.cls) {
+      // a package component (uGUI Button, NavMeshSurface, PlayerInput): a foreign
+      // node named by its class, so `callers NavMeshSurface` finds the scenes
+      const p = pkgs[guid];
+      const short = p.cls!.split(".").pop()!;
+      r = synth(p.path, short, `class ${p.cls} (package ${p.pkg})`, p.pkg);
+      const n = byId.get(r);
+      if (n) n.kind = "class";
+    }
     if (!r && cls) r = cls;
     scriptCache.set(key, r);
     return r;
@@ -309,9 +317,10 @@ export function resolveUnity(
     // LoadAll(folder) or a run-time tail: the folder, else every asset under the prefix
     const folder = all ? key : v.s.endsWith("/") ? key : null;
     const folders = folder !== null ? (resourceFolders.get(folder) ?? []) : [];
-    if (folders.length) return folders.map((p) => assetNodeForPath(p)).filter((x): x is string => !!x);
-    const under = [...resources.keys()].filter((k) => k.startsWith(key)).flatMap((k) => resources.get(k)!).filter(fits);
-    if (under.length <= 40) return under.map((p) => assetNodeForPath(p)).filter((x): x is string => !!x);
+    const under = [...resources.keys()].filter((k) => k.startsWith(all && key ? `${key}/` : key)).flatMap((k) => resources.get(k)!).filter(fits);
+    // the folder when there is one, and the assets themselves while they are few
+    const listed = under.length <= 40 ? under : [];
+    if (folders.length || listed.length) return [...folders, ...listed].map((p) => assetNodeForPath(p)).filter((x): x is string => !!x);
     const dir = key.includes("/") ? key.slice(0, key.lastIndexOf("/")) : key;
     return (resourceFolders.get(dir) ?? []).map((p) => assetNodeForPath(p)).filter((x): x is string => !!x);
   };
@@ -330,6 +339,11 @@ export function resolveUnity(
 
   const sceneTargets = (v: StrOut): string[] => {
     if (v.open) return [];
+    if (/^#\d+$/.test(v.s)) {
+      // build index: the n-th enabled scene of EditorBuildSettings
+      const s = buildScenes.filter((x) => x.enabled)[Number(v.s.slice(1))];
+      return s && fileNodes.has(s.path) ? [s.path] : [];
+    }
     if (v.s.endsWith(".unity")) return fileNodes.has(v.s) ? [v.s] : [];
     const inBuild = buildScenes.filter((s) => basename(s.path, ".unity") === v.s).map((s) => s.path).filter((p) => fileNodes.has(p));
     if (inBuild.length) return inBuild;
@@ -349,6 +363,7 @@ export function resolveUnity(
   };
 
   // ── intents ──
+  const pathRefs = new Map<string, Array<{ t: string; via: string }>>(); // code node → assets its path literals name
   const asmrefTargets = new Map<string, string>(); // asmref folder → assembly node
   const entries = new Map<string, Set<string>>();
   const mark = (id: string | null | undefined, why: string) => {
@@ -441,7 +456,7 @@ export function resolveUnity(
       }
       case "layer": {
         const name = u.name ?? (u.index !== undefined ? tagManager?.layers?.[u.index] : undefined);
-        if (name) for (const n of named("layer", name)) add(e.source, n.id, "references", "extracted", "m_Layer");
+        if (name) for (const n of named("layer", name)) add(e.source, n.id, "references", "extracted", u.via ?? "m_Layer");
         break;
       }
       case "include": {
@@ -527,7 +542,7 @@ export function resolveUnity(
     const op = u.op;
     const { fqn, name: recvName } = recvInfo(e);
     const recvShort = (fqn ?? recvName ?? "").split(".").pop() ?? "";
-    const via = (v: StrOut) => `"${v.s}${v.open ? "…" : ""}"`;
+    const via = (v: StrOut) => (/^#\d+$/.test(v.s) ? `build index ${v.s.slice(1)}` : `"${v.s}${v.open ? "…" : ""}"`);
     const each = (i: number, f: (v: StrOut) => void) => {
       for (const v of argStrings(e, i)) if (v.s || !v.open) f(v);
     };
@@ -679,6 +694,15 @@ export function resolveUnity(
             for (const t of named("layer", v.s)) add(e.source, t.id, "references", "extracted", `LayerMask.${op}(${via(v)})`);
           });
         return;
+      case "path":
+        // a literal "Assets/…" path anywhere in code: the asset or folder it names
+        each(0, (v) => {
+          for (const t of pathTargets(v)) {
+            add(e.source, t, "references", "extracted", via(v));
+            pathRefs.set(e.source, [...(pathRefs.get(e.source) ?? []), { t, via: via(v) }]);
+          }
+        });
+        return;
       case "FindAction":
       case "FindActionMap":
         each(0, (v) => {
@@ -692,18 +716,91 @@ export function resolveUnity(
     }
   }
 
+  // A method using a path constant (`Prefabs = "Assets/…"`) names that asset too.
+  for (const e of prior) {
+    if (e.relation !== "references") continue;
+    const refs = pathRefs.get(e.target);
+    const field = byId.get(e.target);
+    if (!refs || (field?.kind !== "constant" && field?.kind !== "field" && field?.kind !== "property")) continue;
+    for (const r of refs) add(e.source, r.t, "references", "extracted", `${field.name} = ${r.via}`);
+  }
+
+  // ── a scene/prefab also carries what its nested prefabs (and variant bases) carry ──
+  {
+    const nested = new Map<string, Set<string>>(); // file → prefab files it nests/varies
+    const carries = new Map<string, Set<string>>(); // file → classes attached in it
+    const fileOf = (id: string) => byId.get(id)?.path ?? id;
+    for (const e of out) {
+      if (e.relation === "nests" || e.relation === "variant_of") {
+        const from = fileOf(e.source);
+        if (fileNodes.has(e.target)) (nested.get(from) ?? nested.set(from, new Set()).get(from)!).add(e.target);
+      } else if (e.relation === "attaches" && byId.get(e.source)?.kind === "component") {
+        const from = fileOf(e.source);
+        (carries.get(from) ?? carries.set(from, new Set()).get(from)!).add(e.target);
+      }
+    }
+    const memo = new Map<string, Map<string, string>>(); // file → class → nested prefab it comes through
+    const through = (file: string, stack: Set<string>): Map<string, string> => {
+      const m = memo.get(file);
+      if (m) return m;
+      const res = new Map<string, string>();
+      memo.set(file, res);
+      if (stack.has(file)) return res;
+      stack.add(file);
+      for (const p of nested.get(file) ?? []) {
+        for (const c of carries.get(p) ?? []) if (!res.has(c)) res.set(c, p);
+        for (const [c, via] of through(p, stack)) if (!res.has(c)) res.set(c, via);
+      }
+      stack.delete(file);
+      return res;
+    };
+    for (const file of [...nested.keys()].sort()) {
+      const own = carries.get(file) ?? new Set();
+      for (const [cls, via] of through(file, new Set())) {
+        if (!own.has(cls)) add(file, cls, "attaches", "extracted", `nested prefab ${basename(via)}`);
+      }
+    }
+  }
+
+  // ── what a component / asset points at, in its signature (callers and ask show it) ──
+  {
+    const assigned = new Map<string, string[]>();
+    for (const e of out) {
+      if (e.relation !== "assigns" || !e.via) continue;
+      const src = byId.get(e.source);
+      if (!src || (src.kind !== "component" && !(src.kind === "file" && /\.asset$/i.test(src.path)))) continue;
+      const t = byId.get(e.target);
+      const field = e.via.split(", ")[0].replace(/^.*?\b(\w+)$/, "$1");
+      const list = assigned.get(e.source) ?? [];
+      if (list.length < 3) list.push(`${field} → ${t?.path ?? e.target}`);
+      assigned.set(e.source, list);
+    }
+    for (const [id, list] of assigned) {
+      const n = byId.get(id)!;
+      n.signature = `${n.signature ?? ""} · ${list.join(" · ")}`;
+    }
+    for (const e of out) {
+      if (e.relation !== "variant_of") continue;
+      const n = byId.get(e.source);
+      if (n && n.kind === "file") n.signature = `${n.signature ?? ""} of ${byId.get(e.target)?.path ?? e.target}`;
+    }
+  }
+
   // ── assemblies: which asmdef compiles which C# file ──
   const asmDirs: Array<{ dir: string; id: string }> = [];
   for (const [path, a] of assetFacts) if (a.asm) asmDirs.push({ dir: dirname(path), id: `${path}#${a.asm.name}` });
   for (const [dir, id] of asmrefTargets) asmDirs.push({ dir, id });
   asmDirs.sort((x, y) => y.dir.length - x.dir.length);
   const unowned: { runtime: string[]; editor: string[] } = { runtime: [], editor: [] };
+  const asmOf = new Map<string, string>(); // .cs file → "Assembly (asmdef path)"
   for (const id of fileNodes) {
     if (!id.toLowerCase().endsWith(".cs")) continue;
     if (!/^(Assets|Packages)\//.test(id)) continue;
     const owner = asmDirs.find((a) => id.startsWith(`${a.dir}/`));
     if (owner) {
       if (byId.has(owner.id)) add(owner.id, id, "compiles", "extracted");
+      const asmNode = byId.get(owner.id);
+      if (asmNode) asmOf.set(id, `${asmNode.name} (${asmNode.path})`);
     } else if (id.startsWith("Assets/")) {
       (/(^|\/)Editor\//.test(id) ? unowned.editor : unowned.runtime).push(id);
     }
@@ -730,7 +827,16 @@ export function resolveUnity(
     };
     nodes.push(n);
     byId.set(id, n);
-    for (const f of files) add(id, f, "compiles", "extracted");
+    for (const f of files) {
+      add(id, f, "compiles", "extracted");
+      asmOf.set(f, `${name} (no asmdef)`);
+    }
+  }
+  for (const n of nodes) {
+    if (n.kind === "file" || n.kind === "class" || n.kind === "struct" || n.kind === "interface" || n.kind === "enum" || n.kind === "type") {
+      const a = asmOf.get(n.path);
+      if (a) n.asm = a;
+    }
   }
 
   // ── Input System: generated wrapper classes, PlayerInput messages ──

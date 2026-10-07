@@ -57,7 +57,14 @@ export function formatGrepResult(result: GrepResult): string {
   // line is a header — see withSavings).
   const note = truncationNote(result);
   const head = note ? `${formatGrepHeader(result)}\n${note}` : formatGrepHeader(result);
-  const blocks = [head, "", ...result.groups.map((g) => formatGroup(g) + "\n")];
+  const entryBlock = result.entries?.length
+    ? [
+        `engine entry points matching (what the engine/editor runs):`,
+        ...result.entries.map((e) => `  ${e.symbol.name} · ${e.symbol.kind} · ${e.symbol.path}:${e.symbol.span} — ⚙ ${e.entry}`),
+        "",
+      ]
+    : [];
+  const blocks = [head, "", ...entryBlock, ...result.groups.map((g) => formatGroup(g) + "\n")];
   const out = blocks.join("\n").replace(/\n+$/, "\n");
   return withSavings(out, result.saved);
 }
@@ -110,7 +117,7 @@ export function runGrepCommand(pattern: string, dir: string, opts: GrepCliOption
     return;
   }
 
-  if (result.totalHits === 0) {
+  if (result.totalHits === 0 && !result.entries?.length) {
     console.error(zeroHitNote(result));
     return;
   }

@@ -182,7 +182,7 @@ async function callWorkspaceTool(
         ignoreCase: typeof args.ignore_case === 'boolean' ? args.ignore_case : undefined,
         fixed: typeof args.fixed === 'boolean' ? args.fixed : undefined,
       });
-      const text = result.totalHits === 0 ? zeroHitNote(result) : formatGrepResult(result);
+      const text = result.totalHits === 0 && !result.entries?.length ? zeroHitNote(result) : formatGrepResult(result);
       return { text: coverage ? `${text}\n${coverage}` : text, isError: false };
     }
     case 'graft_repo_map': {
@@ -313,7 +313,7 @@ async function callSingleTool(
           fixed: typeof args.fixed === 'boolean' ? args.fixed : undefined,
           in: typeof args.in === 'string' && args.in ? args.in : undefined,
         });
-        if (result.totalHits === 0) return { text: zeroHitNote(result), isError: false };
+        if (result.totalHits === 0 && !result.entries?.length) return { text: zeroHitNote(result), isError: false };
         return { text: formatGrepResult(result), isError: false };
       }
       case 'graft_repo_map': {

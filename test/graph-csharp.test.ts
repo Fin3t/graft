@@ -161,3 +161,28 @@ test("C#: heritage through namespaces, partials, events, overrides", async () =>
   const inv = checkGraphInvariants(graph);
   assert.deepEqual(inv.problems, []);
 });
+
+test("C#: `using static` imports nested types; GetComponent<T> on an untyped receiver is still T", async () => {
+  const { graph } = await build({
+    "Assets/UiFactory.cs": `namespace Game.UI
+{
+    public static partial class UiFactory
+    {
+        public static class UiSound { public static void Denied() { } }
+    }
+}
+`,
+    "Assets/Screen.cs": `using static Game.UI.UiFactory;
+namespace Game.UI
+{
+    public class Screen
+    {
+        void Close(object o) { UiSound.Denied(); var w = Unknown(o).GetComponent<Screen>(); w.Close(o); }
+    }
+}
+`,
+  });
+  const calls = edges(graph, "calls");
+  assert.ok(calls.includes("Screen.Close -> UiFactory.UiSound.Denied"), calls.join("\n"));
+  assert.ok(calls.includes("Screen.Close -> Screen.Close"), "recursion through GetComponent<Screen>() on an unknown receiver");
+});

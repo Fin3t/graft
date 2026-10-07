@@ -11,6 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { cpSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildGraph } from "../src/graph/build.js";
@@ -30,6 +31,8 @@ async function graph(): Promise<GraphV1> {
   if (cached) return cached;
   const dir = tmpRepo("unity");
   cpSync(FIXTURE, dir, { recursive: true });
+  // a git repo, so Library/ stays out of the index as it does in a real project
+  spawnSync("git", ["init", "-q"], { cwd: dir });
   const r = await buildGraph(dir);
   assert.deepEqual(r.errors, []);
   cached = readGraph(wiringPath(r.contextDir))!;
@@ -105,7 +108,8 @@ test("Unity: components in scenes/prefabs attach their classes; prefabs nest and
   const comp = g.nodes.find((n) => short(n.id) === "Spawner:MonoBehaviour")!;
   assert.equal(comp.kind, "component");
   assert.equal(comp.span, "L18-L26");
-  assert.equal(comp.signature, 'Spawner on "Spawner"');
+  // what it points at rides in the signature, so callers/ask show it without a second hop
+  assert.equal(comp.signature, 'Spawner on "Spawner" · walkerPrefab → Assets/Prefabs/Walker.prefab');
 });
 
 test("Unity: UnityEvent, AnimationEvent and SendMessage reach their methods", async () => {
@@ -171,6 +175,30 @@ test("Unity: assemblies, input actions, entry points", async () => {
   assert.match(entry("Walker.OnHit"), /UnityEvent/);
   assert.match(entry("ZombieSwing.OnStateEnter"), /StateMachineBehaviour\.OnStateEnter/);
   assert.equal(entry("Spawner.Later"), "", "a method only code calls is no entry point");
+});
+
+test("Unity: a file carries the classes of the prefabs it nests; variants name their base", async () => {
+  const g = await graph();
+  // Level.unity has no Walker itself, but Walker.prefab nests Base.prefab; the
+  // prefab's own carry is Walker → no derived edge; Base carries nothing.
+  assert.ok(!g.edges.some((e) => e.relation === "attaches" && e.source === "Assets/Prefabs/Walker.prefab" && short(e.target) === "Walker"), "own components are not re-derived");
+  // Level.unity nests Walker.prefab, so it carries Walker too
+  const nested = g.edges.find((e) => e.relation === "attaches" && e.source === "Assets/Scenes/Level.unity" && short(e.target) === "Walker");
+  assert.ok(nested, edgeList(g, "attaches"));
+  assert.match(nested!.via ?? "", /nested prefab Walker\.prefab/);
+  const variant = g.nodes.find((n) => n.id === "Assets/Prefabs/Variant.prefab")!;
+  assert.match(variant.signature ?? "", /variant .* of Assets\/Prefabs\/Base\.prefab/);
+});
+
+test("Unity: package components resolve to foreign nodes; LayerMasks, build indices, tuples", async () => {
+  const g = await graph();
+  const surface = resolveSymbol(g, "NavMeshSurface")[0];
+  assert.equal(surface?.pkg, "com.unity.ai.navigation");
+  assert.ok(edgeWalk(g, surface, "in", 1).some((h) => h.node?.path === "Assets/Scenes/Level.unity"), "the scene's component attaches the package class");
+  assert.ok(g.edges.some((e) => e.relation === "references" && e.source.startsWith("Assets/Scenes/Level.unity#") && short(e.target) === "layer:Enemy" && /m_LayerMask/.test(e.via ?? "")), edgeList(g, "references"));
+  assert.ok(has(g, "loads", "Spawner.Again", "Assets/Scenes/Level.unity"), "LoadSceneAsync(0) → build index 0");
+  assert.ok(has(g, "calls", "Spawner.Again", "Walker.Footstep"), "var (w, n) = Pick() types w");
+  assert.equal(g.nodes.some((n) => n.path.startsWith("Library/")), false, "package sources are not indexed");
 });
 
 test("Unity: graph invariants hold", async () => {
