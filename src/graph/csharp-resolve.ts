@@ -220,6 +220,8 @@ export interface CsModel {
   membersOf(t: TypeInfo, name: string): MemberInfo[];
   /** Type value of an expression (from a C# or Unity intent). */
   typeOf(file: string, u: number, typeId: string | undefined, sourceId: string, e: Expr): TypeValue | null;
+  /** The type an intent's source sits in (see scopeOfIntent). */
+  ownerTypeOf(sourceId: string): TypeInfo | null;
   /** The member a reference expression names (`PlaygroundDirector.SceneName`). */
   memberOf(file: string, u: number, typeId: string | undefined, sourceId: string, e: Expr): MemberInfo | null;
   /** Possible string values of a constant reference, when statically known. */
@@ -742,12 +744,18 @@ export function resolveCSharp(
   // ── expressions ──
   const refsOut: MemberInfo[] = [];
 
+  /** The type an intent's source sits in: the source type itself, or the owner of
+   * the source member. (Extraction stores it only when that is not the case.) */
+  function ownerTypeOf(sourceId: string): TypeInfo | null {
+    return byId.get(sourceId) ?? memberById.get(sourceId)?.owner ?? null;
+  }
+
   function scopeOfIntent(file: string, u: number, typeId: string | undefined, sourceId: string): Scope {
     const facts = factsByFile.get(file)!;
     let method = memberById.get(sourceId);
     // a local function's own generic params are rare; use its enclosing member
     if (method?.fact.mk === "local") method = undefined;
-    return { file, facts, u, type: typeId ? (byId.get(typeId) ?? null) : null, method };
+    return { file, facts, u, type: typeId ? (byId.get(typeId) ?? null) : ownerTypeOf(sourceId), method };
   }
 
   /** Members of the enclosing type chain named `name` (instance + static + inherited). */
@@ -1314,6 +1322,7 @@ export function resolveCSharp(
       const s = evalExpr(scopeOfIntent(file, u, typeId, sourceId), e);
       return s?.k === "val" || s?.k === "type" ? s.tv : null;
     },
+    ownerTypeOf,
     memberOf(file, u, typeId, sourceId, e) {
       if (!factsByFile.has(file)) return null;
       refsOut.length = 0;

@@ -10,7 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cpSync } from "node:fs";
+import { cpSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -224,6 +224,21 @@ test("Unity: Addressables addresses and AudioMixer exposed parameters", async ()
   assert.ok(has(g, "loads", "Spawner.Sound", "Assets/Prefabs/Walker.prefab"), `Addressables "Hero" → Walker.prefab\n${edgeList(g, "loads")}`);
   assert.ok(has(g, "sets", "Spawner.Sound", "Exposed/MusicVolume"), edgeList(g, "sets"));
   assert.ok(!has(g, "sets", "Spawner.Sound", "Parameters/Attack"), "a mixer parameter is not an Animator parameter");
+});
+
+test("Unity: an incremental build equals a cold one (resolver enrichment never accumulates)", async () => {
+  const dir = tmpRepo("unity-inc");
+  cpSync(FIXTURE, dir, { recursive: true });
+  spawnSync("git", ["init", "-q"], { cwd: dir });
+  await buildGraph(dir, { contextDir: join(dir, "graft") });
+  const spawner = join(dir, "Assets/Scripts/Spawner.cs");
+  writeFileSync(spawner, readFileSync(spawner, "utf8").replace("void Later() { }", "void Later() { SendMessage(\"OnHit\"); }"));
+  const inc = await buildGraph(dir, { contextDir: join(dir, "graft") });
+  assert.ok(inc.reused > 0 && inc.parsed >= 1, `incremental: parsed ${inc.parsed}, reused ${inc.reused}`);
+  await buildGraph(dir, { contextDir: join(dir, "cold"), reuse: false });
+  const a = readFileSync(wiringPath(join(dir, "graft")), "utf8");
+  const b = readFileSync(wiringPath(join(dir, "cold")), "utf8");
+  assert.equal(a, b);
 });
 
 test("Unity: graph invariants hold", async () => {

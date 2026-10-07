@@ -1158,8 +1158,9 @@ function emitOnce(ctx: Ctx, source: string, edge: RawEdge): void {
 
 function intent(ctx: Ctx, w: Where, source: string, relation: Relation, cs: Omit<CsIntent, "u" | "ty">): void {
   if (cs.e && JSON.stringify(cs.e).length > MAX_IR) return;
+  // `ty` (the enclosing type) is always the source's own type or the owner of the
+  // source member — the resolver derives it, so the cache doesn't carry it.
   const payload: CsIntent = { ...cs, u: w.u };
-  if (w.typeId) payload.ty = w.typeId;
   emitOnce(ctx, source, { source, relation, file: ctx.rel, cs: payload });
 }
 
@@ -1961,7 +1962,6 @@ function rootName(n: TsNode): string | null {
 
 function unityIntent(ctx: Ctx, w: Where, source: string, ui: Omit<CsUnityIntent, "u" | "ty">): void {
   const payload: CsUnityIntent = { ...ui, u: w.u };
-  if (w.typeId) payload.ty = w.typeId;
   emitOnce(ctx, source, { source, relation: "references", file: ctx.rel, unity: payload });
 }
 

@@ -30,7 +30,9 @@ import { relPosix } from "../util/paths.js";
 import { readSourceFile } from "../util/source.js";
 import { readFollowNestedRepos, readFollowSubmodules, readIncludeDirs } from "../util/state.js";
 import {
+  compactEdges,
   emptyExtractCache,
+  expandEdges,
   readExtractCache,
   writeExtractCache,
   type ExtractEntry,
@@ -282,7 +284,7 @@ export async function buildGraph(
         return;
       }
       nodes.push(...cached.nodes);
-      rawEdges.push(...cached.rawEdges);
+      rawEdges.push(...expandEdges(rel, cached.rawEdges));
       if (cached.facts) facts.set(rel, cached.facts);
       langs.add(label);
       return;
@@ -309,7 +311,7 @@ export async function buildGraph(
         mtimeMs: f.mtimeMs,
         hash,
         nodes: fileNodes,
-        rawEdges: fileEdges,
+        rawEdges: compactEdges(rel, fileEdges),
         ...(fileFacts ? { facts: fileFacts } : {}),
       };
     } catch (err) {

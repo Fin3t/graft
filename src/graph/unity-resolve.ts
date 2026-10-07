@@ -712,7 +712,8 @@ export function resolveUnity(
       case "StartCoroutine":
       case "StopCoroutine": {
         const t0 = cs && u.recv && !(u.recv[0] === "t") ? cs.typeOf(e.file, u.u, u.ty, e.source, u.recv) : null;
-        const own = t0?.k === "in" ? [t0.t] : u.ty && cs?.byId.get(u.ty) ? [cs.byId.get(u.ty)!] : null;
+        const self = cs ? (u.ty ? (cs.byId.get(u.ty) ?? null) : cs.ownerTypeOf(e.source)) : null;
+        const own = t0?.k === "in" ? [t0.t] : self ? [self] : null;
         each(0, (v) => {
           if (v.open) return;
           const hits = methodsNamed(v.s, own);

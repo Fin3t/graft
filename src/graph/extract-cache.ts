@@ -33,7 +33,7 @@ import type { FileFacts, RawEdge } from "./extract.js";
 import type { NodeV1 } from "./types.js";
 
 /** Bump when the on-disk shape below changes. */
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 export const EXTRACT_CACHE_PREFIX = "extract";
 
 export interface ExtractEntry {
@@ -187,6 +187,34 @@ function packageVersion(graphDir: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The on-disk form of one file's raw edges. Nearly every edge originates in the
+ * file it was extracted from and most sources are that file's own symbols, so the
+ * file path is dropped and a `<rel>#…` source/target is stored as `#…`. A C#
+ * project's intents are most of a Unity repo's cache; this halves it. Lossless:
+ * {@link expandEdges} restores the exact objects.
+ */
+export function compactEdges(rel: string, edges: RawEdge[]): RawEdge[] {
+  const prefix = `${rel}#`;
+  return edges.map((e) => {
+    const { file, ...rest } = e;
+    const out = (file === rel ? rest : { ...rest, file }) as RawEdge;
+    if (out.source.startsWith(prefix)) out.source = out.source.slice(rel.length);
+    if (out.targetId?.startsWith(prefix)) out.targetId = out.targetId.slice(rel.length);
+    return out;
+  });
+}
+
+export function expandEdges(rel: string, edges: RawEdge[]): RawEdge[] {
+  return edges.map((e) => {
+    const out: RawEdge = { ...e, file: e.file ?? rel };
+    if (out.source.startsWith("#")) out.source = rel + out.source;
+    else if (out.source === "") out.source = rel;
+    if (out.targetId?.startsWith("#")) out.targetId = rel + out.targetId;
+    return out;
+  });
 }
 
 export function emptyExtractCache(): ExtractCache {
