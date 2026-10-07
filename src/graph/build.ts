@@ -37,7 +37,7 @@ import {
   writeExtractCache,
   type ExtractEntry,
 } from "./extract-cache.js";
-import { writeFingerprint } from "./fingerprint.js";
+import { priorHasMeaning, writeFingerprint } from "./fingerprint.js";
 import { seedGraph, type SeedResult } from "./seed.js";
 import { filterByOnlyDirs, listSourceStats } from "./source-files.js";
 import { resolveEdges, type GoModule } from "./resolve.js";
@@ -168,10 +168,15 @@ function executeMethodTargets(sources: Map<string, string>): Array<{ method: str
   return out;
 }
 
+/** Above this size a file can only be a Unity YAML asset (code is capped at 1 MB by
+ * the walk); see the stat-trusted replay in {@link buildGraph}. */
+const LARGE_ASSET_BYTES = 1_000_000;
+
 export async function buildGraph(
   dir: string,
   opts: GraphBuildOptions = {},
 ): Promise<GraphBuildResult> {
+  const buildStartMs = Date.now();
   const root = resolve(dir);
   const outDir = contextDirFor(root, opts.contextDir);
   // Enumerate once: source extraction, scope discovery, and Go module
@@ -256,6 +261,30 @@ export async function buildGraph(
     // may decide whether a *query* bothers rebuilding; it may not decide what the
     // rebuild itself looks at. Reading is ~0.05ms/file against the ~4.6ms parse
     // this still skips.
+    // One measured exception to "every file is read, every build": a multi-megabyte
+    // Unity asset (a level scene, a font atlas — code never exceeds the 1 MB walk
+    // limit) whose size and mtime match its record, and whose mtime is safely older
+    // than this build (so the coarse-mtime same-second edit cannot hide in it), is
+    // replayed without reading. Re-hashing ~90 MB of YAML was the largest cost of
+    // every auto-sync in a Unity project. `graft check` still hashes everything.
+    if (
+      cached &&
+      cached.hash &&
+      !cached.error &&
+      f.size > LARGE_ASSET_BYTES &&
+      cached.size === f.size &&
+      cached.mtimeMs === f.mtimeMs &&
+      f.mtimeMs < buildStartMs - 2000
+    ) {
+      entries[rel] = { ...cached, size: f.size, mtimeMs: f.mtimeMs };
+      reused++;
+      nodes.push(...cached.nodes);
+      rawEdges.push(...expandEdges(rel, cached.rawEdges));
+      if (cached.facts) facts.set(rel, cached.facts);
+      langs.add(label);
+      return;
+    }
+
     let source: string | null;
     try {
       source = readSourceFile(f.abs);
@@ -364,7 +393,9 @@ export async function buildGraph(
   // graph.json is its own Tier-2 cache: fold in the prior meaning layer so an
   // unchanged body is never re-summarized (and a Tier-1-only run never wipes it).
   // Read BEFORE the first checkpoint can overwrite wiring.json.
-  const prior = readGraph(wiringPath(outDir));
+  // Reading the prior graph only pays when it carries a meaning layer; the
+  // fingerprint records whether the last build wrote any (a $0 build never does).
+  const prior = opts.summarizer || priorHasMeaning(outDir, wiringPath(outDir)) ? readGraph(wiringPath(outDir)) : null;
   const priorById = new Map((prior?.nodes ?? []).map((n) => [n.id, n]));
   const meaning = await enrichGraph(nodes, priorById, sources, {
     summarizer: opts.summarizer,
@@ -409,7 +440,10 @@ export async function buildGraph(
   // these source bytes." Nothing about the projections below — which is why it is
   // safe to write here, and why `graphOnly` builds (the query path, which stops
   // right after this line) are still recorded as fresh.
-  writeFingerprint(outDir, entries, opts.onlyDirs);
+  writeFingerprint(outDir, entries, opts.onlyDirs, {
+    has: nodes.some((n) => n.summary_state !== "pending" || n.summary !== null || n.crux !== null),
+    graphPath,
+  });
 
   // Tier-2 passive surface: project the nodes into per-file markdown cards, and
   // refresh the INDEX roster. Pure projection — no LLM, no network.

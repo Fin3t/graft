@@ -56,6 +56,11 @@ export interface Fingerprint {
    * — so the query-path freshness probe (which never sees a CLI flag) enumerates the
    * identical whitelisted set and excluded files are never phantom "added" drift. */
   onlyDirs?: string[];
+  /** Whether the graph written with these prints carried any Tier-2 meaning
+   * (summary/crux), and the [size, mtimeMs] of the wiring.json it wrote. Only
+   * trusted while wiring.json is still that file; absent → treated as "yes". */
+  meaning?: boolean;
+  graph?: [number, number];
 }
 
 /** What moved since the last build. Empty in all three arrays = nothing to do. */
@@ -90,12 +95,22 @@ export function writeFingerprint(
   outDir: string,
   entries: Record<string, ExtractEntry>,
   onlyDirs?: string[],
+  meaning?: { has: boolean; graphPath: string },
 ): boolean {
   const files: Record<string, Print> = {};
   for (const [rel, e] of Object.entries(entries)) files[rel] = [e.size, e.mtimeMs, e.hash];
   try {
     const record: Fingerprint = { version: FINGERPRINT_VERSION, extractor: stamp(), files };
     if (onlyDirs && onlyDirs.length > 0) record.onlyDirs = onlyDirs;
+    if (meaning) {
+      try {
+        const st = statSync(meaning.graphPath);
+        record.meaning = meaning.has;
+        record.graph = [st.size, st.mtimeMs];
+      } catch {
+        /* no graph file — leave the flag out (= unknown) */
+      }
+    }
     writeJsonAtomic(fingerprintPath(outDir), record, true);
     pruneSidecars(join(outDir, CACHE_DIR), FINGERPRINT_PREFIX);
     return true;
@@ -105,6 +120,21 @@ export function writeFingerprint(
 }
 
 /** `GRAFT_REFRESH=hash` — never trust a stat, confirm every file by its bytes. */
+/** Does the graph on disk carry a meaning layer worth folding into the next build?
+ * Unknown (no fingerprint, or one from before this flag) answers yes. Reads the
+ * fingerprint of ANY extractor stamp: the meaning layer survives extractor changes. */
+export function priorHasMeaning(outDir: string, graphPath: string): boolean {
+  const f = readJson<Fingerprint>(fingerprintPath(outDir));
+  if (!f || f.meaning !== false || !f.graph) return true;
+  try {
+    const st = statSync(graphPath);
+    // rewritten since (a --deep run, a tool, a hand edit): read it after all
+    return st.size !== f.graph[0] || st.mtimeMs !== f.graph[1];
+  } catch {
+    return false; // no graph on disk: nothing to fold in
+  }
+}
+
 export function alwaysHash(): boolean {
   return process.env.GRAFT_REFRESH === "hash";
 }

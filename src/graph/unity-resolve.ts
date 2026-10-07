@@ -212,11 +212,13 @@ export function resolveUnity(
   // ── names ──
   const shaderByName = new Map<string, string>();
   for (const [file, af] of assetFacts) if (af.shaderName) shaderByName.set(af.shaderName, file);
+  const pkgShaders = new Map<string, string>(); // shader name → package GUID
+  for (const [guid, p] of Object.entries(pkgs)) if (p.shader && !pkgShaders.has(p.shader)) pkgShaders.set(p.shader, guid);
   const shaderNode = (name: string): string | null => {
     const f = shaderByName.get(name);
     if (f) return f;
-    for (const [guid, p] of Object.entries(pkgs)) if (p.shader === name) return assetTarget(guid) ?? null;
-    return null;
+    const guid = pkgShaders.get(name);
+    return guid ? (assetTarget(guid) ?? null) : null;
   };
   const byKindName = new Map<string, NodeV1[]>();
   for (const n of nodes) {

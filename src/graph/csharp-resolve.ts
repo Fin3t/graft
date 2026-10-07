@@ -343,12 +343,23 @@ export function resolveCSharp(
     return { k: "ex", fqn: key, args, api: api1 };
   };
 
-  /** Top-level lookup of `name`/arity in namespace `ns` (in-repo first, then API). */
+  /** Top-level lookup of `name`/arity in namespace `ns` (in-repo first, then API).
+   * Memoised on (ns, name, arity): the same few names are looked up through the
+   * same `using`s thousands of times; only the generic arguments differ. */
+  const nsMemo = new Map<string, Map<string, TypeInfo | ApiType | "ambiguous" | null>>();
   const inNamespace = (ns: string, name: string, arity: number, args: TypeValue[]): TypeValue | "ambiguous" | null => {
-    const hits = (byNs.get(ns)?.get(name) ?? []).filter((t) => t.arity === arity);
-    if (hits.length === 1) return { k: "in", t: hits[0], args };
-    if (hits.length > 1) return "ambiguous";
-    return exType(ns ? `${ns}.${name}` : name, args);
+    let byName = nsMemo.get(ns);
+    if (!byName) nsMemo.set(ns, (byName = new Map()));
+    const key = arity ? `${name}\`${arity}` : name;
+    let hit = byName.get(key);
+    if (hit === undefined) {
+      const hits = (byNs.get(ns)?.get(name) ?? []).filter((t) => t.arity === arity);
+      hit = hits.length === 1 ? hits[0] : hits.length > 1 ? "ambiguous" : (api.types[apiKey(ns ? `${ns}.${name}` : name, arity)] ?? null);
+      byName.set(key, hit);
+    }
+    if (hit === null || hit === "ambiguous") return hit;
+    if ("facts" in hit) return { k: "in", t: hit, args };
+    return { k: "ex", fqn: apiKey(ns ? `${ns}.${name}` : name, arity), args, api: hit };
   };
 
   /** Nested type `name` in a type value (and its bases). */
@@ -406,8 +417,20 @@ export function resolveCSharp(
     return null;
   };
 
-  /** Resolve the first segment of a type name, or a namespace. */
+  /** Memo for {@link lookupTypeName} without generic arguments — the common case,
+   * hit once per identifier occurrence otherwise (`Debug`, `Mathf`, `Vector3`, …). */
+  const lookupMemo = new Map<string, TypeValue | { ns: string } | null>();
+  const scopeKeyOf = (sc: Scope) =>
+    `${sc.file}|${sc.u}|${sc.type?.key ?? ""}|${sc.method?.fact.tparams?.length ? sc.method.fact.id : ""}`;
   const lookupTypeName = (sc: Scope, name: string, arity: number, args: TypeValue[]): TypeValue | { ns: string } | null => {
+    if (args.length) return lookupTypeNameUncached(sc, name, arity, args);
+    const key = `${scopeKeyOf(sc)}|${name}|${arity}`;
+    if (lookupMemo.has(key)) return lookupMemo.get(key)!;
+    const r = lookupTypeNameUncached(sc, name, arity, args);
+    lookupMemo.set(key, r);
+    return r;
+  };
+  const lookupTypeNameUncached = (sc: Scope, name: string, arity: number, args: TypeValue[]): TypeValue | { ns: string } | null => {
     if (arity === 0) {
       const tp = typeParamValue(sc, name);
       if (tp) return tp;
@@ -417,6 +440,17 @@ export function resolveCSharp(
       const r = nestedIn({ k: "in", t, args: [] }, name, arity, args);
       if (r) return r;
     }
+    if (args.length) return lookupInScopes(sc, name, arity, args);
+    // the namespace/`using` part depends on the file and scope only, not on the type
+    const key = `${sc.file}|${sc.u}|${name}|${arity}`;
+    if (scopeMemo.has(key)) return scopeMemo.get(key)!;
+    const r = lookupInScopes(sc, name, arity, args);
+    scopeMemo.set(key, r);
+    return r;
+  };
+  const scopeMemo = new Map<string, TypeValue | { ns: string } | null>();
+  const lookupInScopes = (sc0: Scope, name: string, arity: number, args: TypeValue[]): TypeValue | { ns: string } | null => {
+    const sc: Scope = { ...sc0, type: null, method: undefined };
     const chain = scopeChain(sc.facts, sc.u);
     for (let i = 0; i < chain.length; i++) {
       const scope = chain[i];
@@ -470,7 +504,9 @@ export function resolveCSharp(
 
   function resolveTypeText(sc: Scope, text: string, depth = 0): TypeValue | null {
     if (depth > 6) return null;
-    const cacheKey = `${sc.file}|${sc.u}|${sc.type?.key ?? ""}|${sc.method?.fact.id ?? ""}|${text}`;
+    // a method only changes the answer when it declares type parameters
+    const methodKey = sc.method?.fact.tparams?.length ? sc.method.fact.id : "";
+    const cacheKey = `${sc.file}|${sc.u}|${sc.type?.key ?? ""}|${methodKey}|${text}`;
     if (typeCache.has(cacheKey)) return typeCache.get(cacheKey)!;
     typeCache.set(cacheKey, null); // cycle guard
     const syn = parseType(text);
@@ -629,8 +665,19 @@ export function resolveCSharp(
     via: TypeValue; // the type the member was found on (generic substitution source)
   }
 
-  /** Find member `name` on a type value: own, then base chain (BFS, cycle-safe). */
+  /** Find member `name` on a type value: own, then base chain (BFS, cycle-safe).
+   * Memoised for a type without generic arguments (the result then does not
+   * depend on them). */
+  const memberMemo = new Map<string, Found | null>();
   function findMember(tv: TypeValue, name: string): Found | null {
+    const key = tv.k === "in" && tv.args.length === 0 ? `in:${tv.t.key}|${name}` : tv.k === "ex" && tv.args.length === 0 ? `ex:${tv.fqn}|${name}` : null;
+    if (key === null) return findMemberUncached(tv, name);
+    if (memberMemo.has(key)) return memberMemo.get(key)!;
+    const r = findMemberUncached(tv, name);
+    memberMemo.set(key, r);
+    return r;
+  }
+  function findMemberUncached(tv: TypeValue, name: string): Found | null {
     const seen = new Set<string>();
     let frontier: TypeValue[] = [tv];
     for (let depth = 0; depth < 12 && frontier.length; depth++) {

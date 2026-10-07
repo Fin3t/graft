@@ -56,6 +56,8 @@ export interface AskIndexDoc {
   name: [string, number][];
   path: [string, number][];
   body: [string, number][];
+  /** Hash of the text the bags were built from; lets the next build reuse them. */
+  h?: string;
 }
 
 /** The build-time sidecar. `df`/`docCount` cover symbol+file nodes only (no
@@ -81,6 +83,23 @@ function pairs(m: Map<string, number>): [string, number][] {
   return [...m.entries()];
 }
 
+/** Two 32-bit FNV-1a variants (64 bits) over the fields a doc is built from (a collision would only make
+ * a changed node keep stale bags; at ~2^-64 per changed node, negligible). */
+function textHash(...parts: string[]): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x1000193;
+  for (const p of parts) {
+    for (let i = 0; i < p.length; i++) {
+      const c = p.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 16777619);
+      h2 = Math.imul(h2 ^ c, 2246822519);
+    }
+    h1 = Math.imul(h1 ^ 0x1f, 16777619);
+    h2 = Math.imul(h2 ^ 0x1f, 2246822519);
+  }
+  return `${(h1 >>> 0).toString(36)}.${(h2 >>> 0).toString(36)}`;
+}
+
 /** Sum of a token→count bag's counts (a document's field length). */
 function bagLen(p: [string, number][]): number {
   let s = 0;
@@ -99,16 +118,27 @@ export function writeAskIndex(outDir: string, graph: GraphV1): string {
   const nodes = [...graph.nodes].sort((a, b) => a.id.localeCompare(b.id));
   const docs: AskIndexDoc[] = [];
   const df = new Map<string, number>();
+  // Tokenizing every node is most of this function's cost; a node whose text is
+  // unchanged since the last build reuses its bags (same function, same input,
+  // same output — the sidecar stays an exact cache).
+  const prior = new Map<string, AskIndexDoc>();
+  for (const d of readAskIndex(outDir)?.docs ?? []) if (d.h) prior.set(d.id, d);
 
   for (const n of nodes) {
-    const name = counts(tokenize(n.name));
-    const path = counts(tokenize(n.path));
-    const body = counts(
-      tokenize(`${n.signature ?? ""} ${n.summary ?? ""} ${n.body_text ?? ""}`),
-    );
-    docs.push({ id: n.id, name: pairs(name), path: pairs(path), body: pairs(body) });
+    const bodyText = `${n.signature ?? ""} ${n.summary ?? ""} ${n.body_text ?? ""}`;
+    const h = textHash(n.name, n.path, bodyText);
+    const old = prior.get(n.id);
+    let doc: AskIndexDoc;
+    if (old && old.h === h) doc = old;
+    else {
+      doc = { id: n.id, name: pairs(counts(tokenize(n.name))), path: pairs(counts(tokenize(n.path))), body: pairs(counts(tokenize(bodyText))), h };
+    }
+    docs.push(doc);
 
-    const bag = new Set<string>([...name.keys(), ...path.keys(), ...body.keys()]);
+    const bag = new Set<string>();
+    for (const [t] of doc.name) bag.add(t);
+    for (const [t] of doc.path) bag.add(t);
+    for (const [t] of doc.body) bag.add(t);
     for (const t of bag) df.set(t, (df.get(t) ?? 0) + 1);
   }
 

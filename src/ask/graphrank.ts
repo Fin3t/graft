@@ -142,46 +142,113 @@ export function personalizedPageRankPrepared(
   const alpha = opts.alpha ?? 0.25;
   const iters = opts.iters ?? 25;
   const ids = topology.ids;
-  const adjacency = topology.adjacency;
 
   // Restart distribution: seed weights, restricted to real nodes, normalized.
   let seedTotal = 0;
   for (const [id, w] of seeds) if (ids.has(id) && w > 0) seedTotal += w;
   if (seedTotal <= 0) return new Map();
-  const restart = new Map<string, number>();
-  for (const [id, w] of seeds)
-    if (ids.has(id) && w > 0) restart.set(id, w / seedTotal);
+  const csr = csrOf(topology);
+  const restartIdx: number[] = [];
+  const restartVal: number[] = [];
+  for (const [id, w] of seeds) {
+    if (!ids.has(id) || w <= 0) continue;
+    restartIdx.push(csr.index.get(id)!); // `seeds` keys are unique, so are these
+    restartVal.push(w / seedTotal);
+  }
 
-  // Power iteration from the restart distribution.
-  let rank = new Map(restart);
-  for (let i = 0; i < iters; i++) {
-    const next = new Map<string, number>();
+  // Power iteration. Same arithmetic in the same order as the Map-based version
+  // this replaced (insertion order = traversal order), so scores are
+  // bit-identical — only the Map lookups on string ids are gone.
+  const n = csr.names.length;
+  let rank = new Float64Array(n);
+  let next = new Float64Array(n);
+  let order: number[] = [];
+  let nextOrder: number[] = [];
+  const seen = new Uint32Array(n); // generation stamp: set membership of `next`
+  let gen = 1;
+  for (let k = 0; k < restartIdx.length; k++) {
+    rank[restartIdx[k]] = restartVal[k];
+    order.push(restartIdx[k]);
+  }
+  const add = (i: number, v: number) => {
+    if (seen[i] !== gen) {
+      seen[i] = gen;
+      next[i] = v;
+      nextOrder.push(i);
+    } else next[i] += v;
+  };
+  for (let it = 0; it < iters; it++) {
+    gen++;
+    nextOrder = [];
     // Teleport: every step, alpha of the mass returns to the seed set.
-    for (const [id, r] of restart) next.set(id, alpha * r);
+    for (let k = 0; k < restartIdx.length; k++) {
+      const i = restartIdx[k];
+      seen[i] = gen;
+      next[i] = alpha * restartVal[k];
+      nextOrder.push(i);
+    }
     // Dangling mass (nodes with no walk edges) is pooled and returned to the
     // seed set ONCE per iteration — same math as redistributing per node, but
     // O(nodes + seeds) instead of O(dangling × seeds).
     let dangling = 0;
-    for (const [id, mass] of rank) {
-      const nbrs = adjacency.get(id);
-      if (!nbrs || nbrs.length === 0) {
+    for (const i of order) {
+      const mass = rank[i];
+      const from = csr.offsets[i];
+      const to = csr.offsets[i + 1];
+      if (to === from) {
         dangling += mass;
         continue;
       }
-      const share = ((1 - alpha) * mass) / nbrs.length;
-      for (const nb of nbrs) next.set(nb, (next.get(nb) ?? 0) + share);
+      const share = ((1 - alpha) * mass) / (to - from);
+      for (let e = from; e < to; e++) add(csr.targets[e], share);
     }
     if (dangling > 0) {
       const dm = (1 - alpha) * dangling;
-      for (const [sid, r] of restart) next.set(sid, (next.get(sid) ?? 0) + dm * r);
+      for (let k = 0; k < restartIdx.length; k++) add(restartIdx[k], dm * restartVal[k]);
     }
+    const tmp = rank;
     rank = next;
+    next = tmp;
+    order = nextOrder;
   }
 
   let max = 0;
-  for (const v of rank.values()) if (v > max) max = v;
+  for (const i of order) if (rank[i] > max) max = rank[i];
   if (max <= 0) return new Map();
   const out = new Map<string, number>();
-  for (const [id, v] of rank) out.set(id, v / max);
+  for (const i of order) out.set(csr.names[i], rank[i] / max);
   return out;
+}
+
+interface Csr {
+  names: string[];
+  index: Map<string, number>;
+  offsets: Int32Array;
+  targets: Int32Array;
+}
+
+const csrCache = new WeakMap<PageRankTopology, Csr>();
+
+/** The topology as integer arrays (compressed sparse rows), neighbours kept in
+ * adjacency order. Built once per topology. */
+function csrOf(topology: PageRankTopology): Csr {
+  const hit = csrCache.get(topology);
+  if (hit) return hit;
+  const names = [...topology.ids];
+  const index = new Map(names.map((id, i) => [id, i]));
+  const offsets = new Int32Array(names.length + 1);
+  let total = 0;
+  names.forEach((id, i) => {
+    offsets[i] = total;
+    total += topology.adjacency.get(id)?.length ?? 0;
+  });
+  offsets[names.length] = total;
+  const targets = new Int32Array(total);
+  names.forEach((id, i) => {
+    const nbrs = topology.adjacency.get(id);
+    if (nbrs) for (let k = 0; k < nbrs.length; k++) targets[offsets[i] + k] = index.get(nbrs[k])!;
+  });
+  const csr = { names, index, offsets, targets };
+  csrCache.set(topology, csr);
+  return csr;
 }
