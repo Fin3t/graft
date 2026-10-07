@@ -266,3 +266,38 @@ test("trail note without a body says how to write one", () => {
   assert.equal(r.status, 1);
   assert.match(r.err, /a note needs a --title and a body/);
 });
+
+// --- what agents read in a repo that uses trail ---
+
+test("the skill speaks trail in a repo with .trail/, keeps graft/ paths, and teaches notes", async () => {
+  const { skillTemplate } = await import("../src/claude/skill-template.js");
+  const graft = skillTemplate("graft");
+  const trail = skillTemplate("trail");
+  assert.equal(skillTemplate(), graft, "graft is the default, unchanged");
+  assert.doesNotMatch(graft, /\.trail\//);
+  assert.match(trail, /^name: graft$/m, "the name still matches its folder");
+  assert.match(trail, /`trail ask "<question>" --source`/);
+  assert.match(trail, /`trail build` \/ `trail build --check`/);
+  assert.match(trail, /`graft\/` holds a graph/, "the code map folder is still graft/");
+  assert.doesNotMatch(trail, /\bgraft (ask|grep|skeleton|callers|map|build|check)\b/);
+  assert.match(trail, /trail note --title/);
+});
+
+test("the session-start directive mentions notes only where there are some", async () => {
+  const { formatOrientation } = await import("../src/claude/format.js");
+  assert.doesNotMatch(formatOrientation("# map", 100), /\.trail\//);
+  assert.match(formatOrientation("# map", 100, undefined, 3), /Teammates have left 3 notes in \.trail\//);
+});
+
+test("hooks speak trail only in a repo that uses it, on a machine with trail installed", async () => {
+  const { adoptRepoBrand } = await import("../src/brand.js");
+  const bin = mkdtempSync(join(tmpdir(), "notes-bin-"));
+  writeFileSync(join(bin, process.platform === "win32" ? "trail.cmd" : "trail"), "");
+  const withTrail = tmpRepo("brand-repo");
+  ensureTrailDir(withTrail);
+  const plain = tmpRepo("brand-plain");
+  assert.equal(adoptRepoBrand(withTrail, { PATH: bin }), "trail");
+  assert.equal(adoptRepoBrand(withTrail, { PATH: "" }), "graft", "trail not installed: don't suggest it");
+  assert.equal(adoptRepoBrand(plain, { PATH: bin }), "graft");
+  assert.equal(adoptRepoBrand(plain, { PATH: bin, TRAIL_INVOKED_AS: "trail" }), "trail", "a name already set is kept");
+});

@@ -10,6 +10,7 @@ import { claudeDistDir } from './paths.js';
 import { mergeJsonKey, serverEntry, type McpWrite } from '../hosts/mcp-config.js';
 import { hasGraftIndex } from '../graph/root.js';
 import type { PlannedWrite } from '../hosts/plan.js';
+import { repoUsesTrail } from '../brand.js';
 
 /**
  * The files `runInit` writes — pure, no writes, so `--dry-run` and the picker
@@ -87,7 +88,7 @@ export function runInit(
   // greps source. Overwritten each run (graft owns this file), like the shims above.
   const skillPath = skill;
   mkdirSync(dirname(skillPath), { recursive: true });
-  writeFileSync(skillPath, skillTemplate());
+  writeFileSync(skillPath, skillTemplate(repoUsesTrail(dir) ? "trail" : "graft"));
 
   // Register the graft MCP server in the project's .mcp.json so Claude Code
   // exposes graft_find_code/graft_trace_calls/etc. as tools — the same keyed merge the

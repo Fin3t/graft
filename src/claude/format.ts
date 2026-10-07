@@ -6,6 +6,7 @@ import type { GraphV1, EdgeV1 } from '../graph/types.js';
 // question in both places, and one set of calibrated numbers beats two.
 import { HIGH_FLOOR, STRONG_FLOOR } from '../ask/fuse.js';
 import { dollarsSaved, formatDollars } from '../context/price.js';
+import { brand, cmd, tag } from '../brand.js';
 
 const C = {
   indigo: (s: string) => `\x1b[38;2;84;111;255m${s}\x1b[0m`,
@@ -25,13 +26,15 @@ export function freshnessSegment(s: Stats): string {
 export function renderStatusline(
   stats: Stats | null,
   session: SessionState | null,
-  ctx: { ctxPct: number | null },
+  ctx: { ctxPct: number | null; notes?: number },
 ): string[] {
   if (!stats) {
-    return [C.muted('◤ graft · not built · run ') + C.text('graft build')];
+    return [C.muted(`◤ ${brand()} · not built · run `) + C.text(cmd('graft build'))];
   }
-  const top = [C.muted('◤ ') + C.indigo('graft'), C.text(`${stats.nodeCount} nodes / ${stats.edgeCount} edges`)];
+  const top = [C.muted('◤ ') + C.indigo(brand()), C.text(`${stats.nodeCount} nodes / ${stats.edgeCount} edges`)];
   top.push(freshnessSegment(stats));
+  // The team's notes, so a session that starts with some knows they're there.
+  if (ctx.notes) top.push(C.amber(`${ctx.notes} note${ctx.notes === 1 ? '' : 's'} in .trail/`));
   const saved = session?.savedTokens ?? 0;
   if (saved > 0) {
     // Dollars only once a turn has actually been billed — see context/price.ts.
@@ -110,8 +113,8 @@ function retrievalBody(hits: AskJson['hits']): string {
   // pulling spans itself via `graft ask --source` (push→pull: per-prompt injected
   // tokens are always fresh full-price input, so the pack stays tiny).
   const header = hits.some((h) => h.code)
-    ? '[graft] retrieved context, read these spans; do not re-open the files:'
-    : '[graft] starting points for this task: pull the code inline with `graft ask "<what you need>" --source`, trace impact with `graft callers <symbol>`, or search with `graft grep "<literal>"`:';
+    ? `${tag()} retrieved context, read these spans; do not re-open the files:`
+    : `${tag()} starting points for this task: pull the code inline with \`${cmd('graft ask')} "<what you need>" --source\`, trace impact with \`${cmd('graft callers')} <symbol>\`, or search with \`${cmd('graft grep')} "<literal>"\`:`;
   return `${header}\n${blocks.join('\n')}`;
 }
 
@@ -133,7 +136,7 @@ export function formatRetrieval(ask: AskJson, cap = 5): string | null {
   const base = tokensOf(ask.saved!.baselineChars);
   const pct = Math.round((saved / base) * 100);
   return (
-    `${body}\n[graft] tokens saved ≈ ${saved.toLocaleString()} (${pct}%); this pack ≈ ` +
+    `${body}\n${tag()} tokens saved ≈ ${saved.toLocaleString()} (${pct}%); this pack ≈ ` +
     `${tokensOf(body.length).toLocaleString()} tok vs reading the ${ask.saved!.files} file(s) whole ≈ ` +
     `${base.toLocaleString()} tok (estimate).`
   );
@@ -208,26 +211,43 @@ export function relevantRetrieval(ask: AskJson, s: SessionState, cap = 3): strin
   return txt;
 }
 
-export function formatOrientation(indexMd: string, budgetBytes = 1500, staleNote?: string): string {
+export function formatOrientation(indexMd: string, budgetBytes = 1500, staleNote?: string, notes = 0): string {
   // Always-on directive (cached, seen turn 0) so the agent reaches for graft's
   // commands without waiting for the discretionary skill to load. This is the
   // reliable steering channel (fires every session, unlike the discretionary
   // skill): it carries a one-line description of each tool AND the call-discipline
   // that keeps the agent from over-tooling. Positive only, names the tools,
-  // forbids nothing.
+  // forbids nothing. Spelled by the running name (brand.ts): under graft, byte
+  // for byte what it always was.
+  const b = brand();
   const directive =
-    `[graft] This repo is indexed by graft. To find, understand, or change code, reach for graft first; it answers from a prebuilt graph with exact file:line, faster than grep/read. Pick the ONE tool that fits and act on its answer. Most tasks need a single call. If one isn't enough, switch to the tool that fits the next need; don't call the same tool again and again or re-ask a question reworded:\n` +
-    `  • graft ask "<task>" --source: locate + understand. Ranked nodes with the code inlined at each file:line (the ≤8-line crux; add --full for the whole span). The default for "how does X work" / "where is Y".\n` +
-    `  • graft grep "<literal>": exhaustive find. Every occurrence, grouped by enclosing symbol; use when you need them ALL (ask is ranked top-N and misses instances).\n` +
-    `  • graft skeleton <file>: a file's whole API in ~200 tokens, every signature + span, ~10x cheaper than reading the file.\n` +
-    `  • graft callers <sym> [--direction out] [--depth N|all]: exact edges. Who calls it (default), what it calls (--direction out), or the full blast radius (--depth 2, or --depth all for every connected source). Run before you change a symbol.\n` +
-    `  • graft map: orientation for an unfamiliar repo, directory clusters, hubs, hotspots. map alone is the answer; don't then skeleton every subsystem it names.\n` +
+    `${tag()} This repo is indexed by ${b}. To find, understand, or change code, reach for ${b} first; it answers from a prebuilt graph with exact file:line, faster than grep/read. Pick the ONE tool that fits and act on its answer. Most tasks need a single call. If one isn't enough, switch to the tool that fits the next need; don't call the same tool again and again or re-ask a question reworded:\n` +
+    `  • ${cmd('graft ask')} "<task>" --source: locate + understand. Ranked nodes with the code inlined at each file:line (the ≤8-line crux; add --full for the whole span). The default for "how does X work" / "where is Y".\n` +
+    `  • ${cmd('graft grep')} "<literal>": exhaustive find. Every occurrence, grouped by enclosing symbol; use when you need them ALL (ask is ranked top-N and misses instances).\n` +
+    `  • ${cmd('graft skeleton')} <file>: a file's whole API in ~200 tokens, every signature + span, ~10x cheaper than reading the file.\n` +
+    `  • ${cmd('graft callers')} <sym> [--direction out] [--depth N|all]: exact edges. Who calls it (default), what it calls (--direction out), or the full blast radius (--depth 2, or --depth all for every connected source). Run before you change a symbol.\n` +
+    `  • ${cmd('graft map')}: orientation for an unfamiliar repo, directory clusters, hubs, hotspots. map alone is the answer; don't then skeleton every subsystem it names.\n` +
     `  In a monorepo, add --in <path>/ to ask/grep/callers to scope to one sub-project; hits are labeled [scope/].\n` +
-    `  Already know the file or symbol to change? Go straight to it: graft grep "<symbol>", read the span, edit. Save ask for when you don't yet know where the code lives.\n` +
-    `  Refactor, rename, or multi-file change? Run graft callers <sym> --depth all FIRST to map every connected file; editing the primary file and stopping is the classic miss (platform siblings, a new file to extract).\n` +
-    `Each tool opens its output with a "[graft] tokens saved ≈ N" line, sometimes with its dollar value; when you used graft this turn, close your reply with a one-line tally of the total saved, dollars included when given (e.g. 🌱 graft saved ~12k tokens (~$0.04) this turn, 3 calls). Never price tokens yourself; never pipe graft through head/tail — it is already capped, and clipping drops that line.\n`;
+    `  Already know the file or symbol to change? Go straight to it: ${cmd('graft grep')} "<symbol>", read the span, edit. Save ask for when you don't yet know where the code lives.\n` +
+    `  Refactor, rename, or multi-file change? Run ${cmd('graft callers')} <sym> --depth all FIRST to map every connected file; editing the primary file and stopping is the classic miss (platform siblings, a new file to extract).\n` +
+    `Each tool opens its output with a "${tag()} tokens saved ≈ N" line, sometimes with its dollar value; when you used ${b} this turn, close your reply with a one-line tally of the total saved, dollars included when given (e.g. 🌱 ${b} saved ~12k tokens (~$0.04) this turn, 3 calls). Never price tokens yourself; never pipe ${b} through head/tail — it is already capped, and clipping drops that line.\n` +
+    teamNotesDirective(notes);
   const banner = staleNote ? `${staleNote}\n\n` : "";
   return `${banner}${directive}\nrepo map (graft/INDEX.md):\n${indexMd.slice(0, budgetBytes)}`;
+}
+
+/**
+ * The paragraph about `.trail/`, for a repo whose team keeps notes there:
+ * read them first, credit them in the tally, and leave one when done. Empty
+ * for a repo with none, so graft's directive is unchanged everywhere else.
+ */
+export function teamNotesDirective(notes: number): string {
+  if (notes <= 0) return '';
+  return (
+    `Teammates have left ${notes} note${notes === 1 ? '' : 's'} in .trail/ on what they decided, tried and ruled out. \`${cmd('graft ask')}\` puts the ones that bear on a task above the code; read them before exploring. ` +
+    `When a note saved you work, add to your tally how much of it came from that note, using the cost printed with it (e.g. ~9k tokens and ~12 min of it came from Priya's note on bbox rotation).\n` +
+    `When you finish a task that took real digging, leave a note for the next person: \`${cmd('graft note')} --title "<what it was about>"\` with the note on stdin, under ## Decided, ## Tried and ruled out and ## Watch out. A summary, never a transcript, and nothing secret: it gets committed.\n`
+  );
 }
 
 export function renderSubagent(agentName: string, session: SessionState | null): string {

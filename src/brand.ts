@@ -16,7 +16,7 @@
  *
  * This file imports nothing heavier than node:fs, because the hooks load it.
  */
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 
@@ -84,6 +84,39 @@ export function cmd(graftSpelling: string, b: Brand = brand()): string {
 export function inBrand(text: string, b: Brand = brand()): string {
   if (b === "graft") return text;
   return text.replace(/\bgraft_(?=[a-z])/g, "trail_").replace(/\bgraft\b(?![/\w-])/g, "trail");
+}
+
+/* -------------------------------------------------------------------------- */
+/* hooks and the statusline                                                   */
+/* -------------------------------------------------------------------------- */
+
+/** `trail init` ran here: the repo keeps team notes in `.trail/`. */
+export function repoUsesTrail(repo: string): boolean {
+  return existsSync(join(repo, ".trail"));
+}
+
+/** How many notes `.trail/notes/` holds, or 0. */
+export function noteCount(repo: string): number {
+  try {
+    return readdirSync(join(repo, ".trail", "notes")).filter((f) => f.endsWith(".md")).length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * The name hooks and the statusline speak in `repo`. They run under whatever
+ * shim set the repo up, often one an older graft committed, so no `dist/bin`
+ * entry has set a name. They say trail in a repo that uses it, but only when
+ * the `trail` command is installed on this machine: a hook that tells the
+ * agent to run a command the machine doesn't have costs a failed tool call.
+ * A name already set (by the CLI that spawned this) is kept.
+ */
+export function adoptRepoBrand(repo: string, env: NodeJS.ProcessEnv = process.env): Brand {
+  if (env[BRAND_ENV] !== "trail" && env[BRAND_ENV] !== "graft") {
+    setBrand(repoUsesTrail(repo) && trailOnPath(env) ? "trail" : "graft", env);
+  }
+  return brand(env);
 }
 
 /* -------------------------------------------------------------------------- */

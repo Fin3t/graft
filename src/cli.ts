@@ -1302,6 +1302,10 @@ async function runInitCommand(
     // Today's output, file by file, behind --verbose. Everything else gets one
     // line per step: the graph, then one per agent.
     const verbose = opts.verbose === true;
+    // Under trail, `.trail/` goes in first: the skill and hooks written next
+    // read its presence to decide they speak trail (brand.ts, repoUsesTrail).
+    const trailCreated = new Map<string, boolean>();
+    if (TRAIL) for (const target of targets) trailCreated.set(target, ensureTrailDir(target).created);
     const reports: WireReport[] = [];
     for (const target of targets) {
       if (verbose && target !== repo) console.error(`\n— ${relative(repo, target)}/`);
@@ -1362,7 +1366,7 @@ async function runInitCommand(
     if (TRAIL) {
       const sectionFiles = [...new Set(HOSTS.filter((h) => ids.includes(h.id) && h.kind === "section").map((h) => h.relPath))];
       for (const target of targets) {
-        const { created } = ensureTrailDir(target);
+        const created = trailCreated.get(target) === true;
         const writes = writeTrailBlocks(target, { claude: wantClaude, files: sectionFiles });
         if (target !== repo) continue;
         const notes = listNotes(repo);

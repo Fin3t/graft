@@ -1,9 +1,50 @@
+import type { Brand } from "../brand.js";
 // The graft Claude Code skill, bundled as a string so `graft init` can write it into a
 // consumer repo's .claude/skills/graft/SKILL.md (no network fetch, version-locked to the
 // installed graft). This is the single source of truth for the skill text; graft's own
 // repo copy is regenerated from here when `init` runs in this repo. Mirrors the `.cjs`
 // shim pattern in shim-template.ts.
-export function skillTemplate(): string {
+//
+// `brand` is the repo's name for the tool, not the machine's: a repo with
+// `.trail/` gets the trail text, whoever refreshes it, so teammates on graft and
+// trail never flip the committed file back and forth.
+export function skillTemplate(brand: Brand = "graft"): string {
+  return brand === "trail" ? trailSkill(graftSkill()) : graftSkill();
+}
+
+/**
+ * The graft text with trail's spelling. The code map still lives in `graft/`,
+ * so a `graft` followed by `/` is a path and stays; `graft check` became
+ * `trail build --check`. Then the part only trail has: the team's notes.
+ */
+function trailSkill(graft: string): string {
+  const text = graft
+    .replace("### 6 · Lifecycle: \`graft build\` / \`graft check\`", "### 6 · Lifecycle: \`trail build\` / \`trail build --check\`")
+    .replace("\`check\` fails when \`graft/\` is stale, for CI.", "\`build --check\` fails when \`graft/\` is stale, for CI.")
+    .replace(/\bgraft\b(?![/\w-])/g, "trail")
+    // A skill's name matches its folder, and this one still lives in
+    // .claude/skills/graft/ until the wiring moves to trail names.
+    .replace(/^name: trail$/m, "name: graft");
+  return `${text.trimEnd()}
+
+## Team notes in .trail/
+Teammates' sessions leave notes in \`.trail/notes/\`: what they decided, tried
+and ruled out, and what it took to work out. \`trail ask\` puts the ones that
+bear on your task above the code, so read them before exploring. When a note
+saved you work, add to your tally how much of it came from that note, using
+the cost printed with it.
+
+When you finish a task that took real digging, leave a note for the next
+person: \`trail note --title "<what it was about>"\` with the note on stdin,
+under \`## Decided\`, \`## Tried and ruled out\` and \`## Watch out\`. A summary,
+never a transcript, and nothing secret: it gets committed.
+
+If \`trail\` isn't installed on this machine but \`graft\` is, it's the same
+command under its old name.
+`;
+}
+
+function graftSkill(): string {
   return `---
 name: graft
 description: This repo is indexed by graft/. For ANY task here, whether
