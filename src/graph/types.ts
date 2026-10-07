@@ -29,7 +29,23 @@ export type Kind =
   // breadth tier's kinds read truthfully in cards/skeleton.
   | "module"
   | "constant"
-  | "variable";
+  | "variable"
+  // C# members (the C# depth tier, csharp.ts): a property/indexer, a field and an
+  // event are first-class definitions there — Unity serializes fields and wires
+  // events — so they get their own kinds rather than collapsing into "variable".
+  | "property"
+  | "field"
+  | "event"
+  // Unity layer (unity.ts): a GameObject in a scene/prefab, an asset known only
+  // through its `.meta` (texture, mesh, audio, folder), an Animator state or
+  // parameter, an Input System action, and a tag/layer from TagManager.asset.
+  | "gameobject"
+  | "asset"
+  | "state"
+  | "parameter"
+  | "action"
+  | "tag"
+  | "layer";
 
 /** How confident we are an edge is true, best-first. The hand-written AST
  * resolver assigns `extracted`/`inferred`; the opt-in LSP enrichment pass
@@ -85,6 +101,13 @@ export interface NodeV1 {
   //                 languages that do not emit it — resolution then behaves as before.
   variadic?: boolean; // the last parameter is a vararg (`String... xs`), so the declared
   //                 arity is a MINIMUM, not an equality. Never arity-filtered out.
+  entry?: string; // called by an engine/framework rather than by code in the repo: a
+  //                 Unity message (`Update`), an `[InitializeOnLoad]`/`[MenuItem]`
+  //                 target, an `-executeMethod` target, a test. Set by the resolver,
+  //                 so "no indexed callers" is not mistaken for dead code.
+  pkg?: string; // third-party code vendored into the repo (a Unity embedded package
+  //                 under `Packages/<name>/`): the package name. Indexed, but labelled
+  //                 foreign so it never reads as the project's own code.
 
   // meaning (Tier-2, one LLM call)
   summary_state: SummaryState;
@@ -98,13 +121,31 @@ export type Relation =
   | "imports" // file → module
   | "references" // symbol → symbol it names but doesn't call
   | "implements" // TS: class → interface
-  | "extends"; // class → base class
+  | "extends" // class → base class
+  | "overrides" // C#: method → the base/interface member it overrides or implements
+  | "subscribes" // C#: method → handler it subscribes (`x.Evt += H`, `AddListener(H)`)
+  // Unity layer — asset wiring that is not code but decides what code runs.
+  | "attaches" // GameObject → MonoBehaviour class it carries (m_Script)
+  | "nests" // GameObject → prefab it instantiates (PrefabInstance.m_SourcePrefab)
+  | "variant_of" // prefab variant → its base prefab
+  | "instance_of" // ScriptableObject asset → its class
+  | "assigns" // serialized field → the asset/object it points to (via = field)
+  | "invokes" // UnityEvent / AnimationEvent / input action / SendMessage → method
+  | "loads" // code → asset named by a string (Resources.Load, Shader.Find, LoadScene, …)
+  | "sets" // code → Animator parameter, shader property, tag or layer named by a string
+  | "plays" // code → Animator state named by a string (Play/CrossFade)
+  | "uses_shader" // material → shader / shader graph
+  | "compiles"; // assembly definition (.asmdef) → a C# file it compiles
 
 export interface EdgeV1 {
   source: string; // node id
   target: string; // node id, or an unresolved module string for imports
   relation: Relation;
   confidence: Confidence;
+  /** What carries the edge, when the relation alone does not say: the serialized
+   * field (`assigns`, `invokes`), the event expression (`subscribes`), the string
+   * that named the target (`loads`, `sets`). Display only — never part of identity. */
+  via?: string;
 }
 
 /** A ranking scope: a sub-project discovered by project-marker files (`package.json`,

@@ -26,9 +26,13 @@ import type { GraphV1 } from "./types.js";
 const KINDS = new Set<string>([
   "file", "class", "function", "method", "interface",
   "type", "enum", "struct", "module", "constant", "variable",
+  "property", "field", "event",
+  "gameobject", "asset", "state", "parameter", "action", "tag", "layer",
 ]);
 const RELATIONS = new Set<string>([
   "contains", "calls", "imports", "references", "implements", "extends",
+  "overrides", "subscribes", "attaches", "nests", "variant_of", "instance_of",
+  "assigns", "invokes", "loads", "sets", "plays", "uses_shader", "compiles",
 ]);
 const CONFIDENCE = new Set<string>([
   "lsp_resolved", "lsp_dispatch", "extracted", "inferred",
@@ -39,7 +43,14 @@ const CONFIDENCE = new Set<string>([
 // annotation whose type is not declared in-repo. The set is language-agnostic —
 // no other producer currently leaves an unresolved `references` target, so a
 // future bug elsewhere would be masked here.
-const TARGET_MAY_BE_EXTERNAL = new Set<string>(["imports", "extends", "implements", "references"]);
+// The Unity/C# tier adds the relations whose target may live in an engine
+// assembly or a package (Library/PackageCache), named by its full name rather than
+// dropped: a package component (`UnityEngine.UI.Button`), a built-in shader, an
+// overridden engine virtual (`UnityEditor.Editor.OnInspectorGUI`).
+const TARGET_MAY_BE_EXTERNAL = new Set<string>([
+  "imports", "extends", "implements", "references",
+  "attaches", "uses_shader", "overrides", "assigns", "nests", "instance_of", "variant_of",
+]);
 
 export interface InvariantResult {
   /** One human-readable line per violation; empty when the graph is well-formed. */

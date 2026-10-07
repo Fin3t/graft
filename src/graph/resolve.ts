@@ -15,8 +15,10 @@
 import { posix } from "node:path";
 import { toPosixPath } from "../util/paths.js";
 import type { EdgeV1, Kind, NodeV1, Relation } from "./types.js";
-import { languageOf, type RawEdge } from "./extract.js";
+import { languageOf, type FileFacts, type RawEdge } from "./extract.js";
 import { genericLangOf } from "./generic.js";
+import { resolveCSharp } from "./csharp-resolve.js";
+import type { CsFacts } from "./csharp.js";
 
 const IMPORT_EXTS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".py"];
 /** C/C++ source + header extensions, for resolving `#include` targets. */
@@ -96,6 +98,8 @@ export interface ResolveOptions {
    * (`example.com/app/pkg/util`) to the in-repo directory they name, relative to the
    * owning module's `go.mod` location. Empty/absent → Go imports stay external strings. */
   goModules?: GoModule[];
+  /** Per-file facts from extractors that resolve with a global model (C#, Unity). */
+  facts?: Map<string, FileFacts>;
 }
 
 export function resolveEdges(
@@ -201,9 +205,26 @@ export function resolveEdges(
     out.push({ source, target, relation, confidence });
   };
 
+  // C# (and the Unity layer built on it) resolve against a typed model of the whole
+  // repo; their intents carry an expression instead of a bare name.
+  const csFacts = new Map<string, CsFacts>();
+  for (const [file, f] of opts.facts ?? []) if (f.cs) csFacts.set(file, f.cs);
+  if (csFacts.size) {
+    const cs = resolveCSharp(nodes, rawEdges, csFacts);
+    for (const e of cs.edges) {
+      const key = `${e.source}\0${e.relation}\0${e.target}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(e);
+    }
+  }
+
   for (const e of rawEdges) {
+    if (e.cs || e.unity) continue;
     if (e.relation === "contains" && e.targetId) {
       add(e.source, e.targetId, "contains", "extracted");
+    } else if (e.targetId && csFacts.has(e.file)) {
+      continue; // resolved by the C# pass
     } else if (e.relation === "imports" && e.specifier) {
       const target =
         hasGoModules && e.file.endsWith(".go")

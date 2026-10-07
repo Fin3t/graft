@@ -19,6 +19,8 @@ import { basename } from "node:path";
 import { contentHash } from "../util/id.js";
 import { collectBindings, goReceiverVarOf, resolveRecvType, type FileBindings } from "./bindings.js";
 import type { Kind, NodeV1, Relation } from "./types.js";
+import type { CsFacts, CsIntent, CsUnityIntent } from "./csharp.js";
+import type { UnityFacts, UnityIntent } from "./unity.js";
 
 export type Language = "typescript" | "tsx" | "python" | "go" | "java" | "kotlin" | "swift" | "php" | "r";
 
@@ -120,11 +122,25 @@ export interface RawEdge {
    * no such member — and ONLY then, so a name defined as both a member and a
    * free function yields the member edge alone, exactly as Swift dispatches it. */
   implicitSelf?: boolean;
+  /** C# depth tier (csharp.ts): an expression/type to resolve with the global type
+   * index (csharp-resolve.ts) instead of the bare-name rules below. */
+  cs?: CsIntent;
+  /** A Unity reference that is resolved against the asset index (unity-resolve.ts):
+   * a string named in C# code, or a GUID/fileID reference in a serialized asset. */
+  unity?: CsUnityIntent | UnityIntent;
+}
+
+/** Per-file declarations a global resolver needs beyond nodes and edge intents.
+ * Cached with the file's extraction, so it obeys the same cold == incremental rule. */
+export interface FileFacts {
+  cs?: CsFacts;
+  unity?: UnityFacts;
 }
 
 export interface ExtractResult {
   nodes: NodeV1[];
   rawEdges: RawEdge[];
+  facts?: FileFacts;
 }
 
 /** Max chars of normalized body stored per symbol for search. Large enough that

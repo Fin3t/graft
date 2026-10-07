@@ -17,9 +17,10 @@ import { readFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { walkDir } from "../ingest/fs.js";
 import { contextDirFor, ensureGitignored, ensureSearchable } from "../context/node-file.js";
-import { extractFile, languageLabelOf, languageOf, type RawEdge } from "./extract.js";
+import { extractFile, languageLabelOf, languageOf, type FileFacts, type RawEdge } from "./extract.js";
 import { extractGeneric, genericLangOf, warmGenericGrammars } from "./generic.js";
 import { containerLangOf, extractContainer, warmContainerGrammars } from "./container.js";
+import { extractCSharp, isCSharpPath, warmCSharp } from "./csharp.js";
 import { contentHash } from "../util/id.js";
 import { relPosix } from "../util/paths.js";
 import { readSourceFile } from "../util/source.js";
@@ -168,6 +169,7 @@ export async function buildGraph(
 
   const nodes: NodeV1[] = [];
   const rawEdges: RawEdge[] = [];
+  const facts = new Map<string, FileFacts>();
   const sources = new Map<string, string>();
   /** Display labels, not grammars — `.mjs` is parsed as typescript but reported as
    * javascript, or the banner claims a repo's JavaScript went unindexed. */
@@ -201,6 +203,9 @@ export async function buildGraph(
   await warmContainerGrammars(
     new Set(files.map((f) => containerLangOf(f.abs)?.name).filter((n): n is string => !!n)),
   );
+  // C# depth tier: WASM grammar too (no native tree-sitter-c-sharp on this ABI).
+  // When it cannot load, `.cs` falls through to the breadth tier as before.
+  const csharp = files.some((f) => isCSharpPath(f.abs)) && (await warmCSharp());
 
   files.forEach((f, i) => {
     const rel = f.rel;
@@ -208,12 +213,13 @@ export async function buildGraph(
     // Depth tier (hand-written, native grammar) if a language claims the file;
     // otherwise the breadth tier (generic tags.scm over a WASM grammar).
     const lang = languageOf(f.abs);
+    const cs = !lang && csharp && isCSharpPath(f.abs);
     // A container is neither tier: its wrapper grammar only locates the embedded
     // block, which then goes to the depth-tier extractor. Checked before the
     // breadth tier so a future grammar claiming .vue can't shadow it.
-    const container = lang ? null : containerLangOf(f.abs);
-    const generic = lang || container ? null : genericLangOf(f.abs);
-    const label = languageLabelOf(f.abs) ?? container?.name ?? generic?.name ?? "unknown";
+    const container = lang || cs ? null : containerLangOf(f.abs);
+    const generic = lang || cs || container ? null : genericLangOf(f.abs);
+    const label = languageLabelOf(f.abs) ?? (cs ? "c_sharp" : undefined) ?? container?.name ?? generic?.name ?? "unknown";
     const cached = priorExtract.files[rel];
 
     // Every file is read and hashed, every build — only the *parse* is memoized.
@@ -254,22 +260,33 @@ export async function buildGraph(
       }
       nodes.push(...cached.nodes);
       rawEdges.push(...cached.rawEdges);
+      if (cached.facts) facts.set(rel, cached.facts);
       langs.add(label);
       return;
     }
 
     parsed++;
     try {
-      const { nodes: fileNodes, rawEdges: fileEdges } = lang
+      const { nodes: fileNodes, rawEdges: fileEdges, facts: fileFacts } = lang
         ? extractFile(rel, source, lang)
-        : container
-          ? extractContainer(rel, source, container)
-          : extractGeneric(rel, source, generic!.name);
+        : cs
+          ? extractCSharp(rel, source)
+          : container
+            ? extractContainer(rel, source, container)
+            : extractGeneric(rel, source, generic!.name);
       nodes.push(...fileNodes);
       rawEdges.push(...fileEdges);
+      if (fileFacts) facts.set(rel, fileFacts);
       sources.set(rel, source);
       langs.add(label);
-      entries[rel] = { size: f.size, mtimeMs: f.mtimeMs, hash, nodes: fileNodes, rawEdges: fileEdges };
+      entries[rel] = {
+        size: f.size,
+        mtimeMs: f.mtimeMs,
+        hash,
+        nodes: fileNodes,
+        rawEdges: fileEdges,
+        ...(fileFacts ? { facts: fileFacts } : {}),
+      };
     } catch (err) {
       const message = `${rel}: parse failed — ${err instanceof Error ? err.message : String(err)}`;
       errors.push(message);
@@ -288,7 +305,7 @@ export async function buildGraph(
     files: entries,
   });
 
-  const edges = resolveEdges(nodes, rawEdges, { goModules: readGoModules(root, repoFiles) });
+  const edges = resolveEdges(nodes, rawEdges, { goModules: readGoModules(root, repoFiles), facts });
 
   // Guard 5 (minimum-substance): node counts aren't known until nodes are
   // assembled, so the merge-tiny-scopes-into-root guard runs here.
