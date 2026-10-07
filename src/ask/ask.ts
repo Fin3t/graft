@@ -691,10 +691,12 @@ function lexical(
     }
     return own ? loadsFirst(own) : undefined;
   };
-  // A Unity asset answers "who uses it": its incoming wiring from other files.
+  // A Unity asset, tag or layer answers "who uses it": its incoming wiring from
+  // other files (an asset collects what points at anything inside it).
   let usersByTarget: Map<string, string[]> | null = null;
   const usersOf = (n: NodeV1): string[] | undefined => {
-    if (!(n.kind === "asset" || (n.kind === "file" && unityKindOf(n.path)))) return undefined;
+    const own = n.kind === "tag" || n.kind === "layer";
+    if (!own && !(n.kind === "asset" || (n.kind === "file" && unityKindOf(n.path)))) return undefined;
     if (!usersByTarget) {
       usersByTarget = new Map();
       for (const e of graph?.edges ?? []) {
@@ -702,12 +704,15 @@ function lexical(
         const s = byId.get(e.source);
         const t = byId.get(e.target);
         if (!s || !t || s.path === t.path) continue;
-        const list = usersByTarget.get(t.path) ?? [];
-        if (list.length < 6) list.push(`${e.relation} ← ${s.kind === "file" ? s.path : `${s.name} (${s.path})`}${e.via ? ` via ${e.via}` : ""}`);
-        usersByTarget.set(t.path, list);
+        const line = `${e.relation} ← ${s.kind === "file" ? s.path : `${s.name} (${s.path})`}${e.via ? ` via ${e.via}` : ""}`;
+        for (const key of t.id === t.path ? [t.path] : [t.path, `#${t.id}`]) {
+          const list = usersByTarget.get(key) ?? [];
+          if (list.length < 6) list.push(line);
+          usersByTarget.set(key, list);
+        }
       }
     }
-    return usersByTarget.get(n.path);
+    return usersByTarget.get(own ? `#${n.id}` : n.path);
   };
   const makeSymbolHit = (id: string, hitScore: number, scope?: string): AskHit | null => {
     const n = byId.get(id);

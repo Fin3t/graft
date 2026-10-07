@@ -588,14 +588,19 @@ function extractYamlAsset(rel: string, source: string, o: Out, kind: string): Un
   const base = basename(rel);
 
   if (rel === "ProjectSettings/TagManager.asset" && main) {
-    const layers = itemsOf(main, "layers").map((i) => i.v[""] ?? "");
-    const tags = itemsOf(main, "tags").map((i) => i.v[""] ?? "").filter(Boolean);
+    const layerItems = itemsOf(main, "layers");
+    const tagItems = itemsOf(main, "tags").filter((i) => i.v[""]);
+    const layers = layerItems.map((i) => i.v[""] ?? "");
+    const tags = tagItems.map((i) => i.v[""]);
     asset.layers = layers;
     asset.tags = tags;
     o.nodes.push(fileNode(rel, source, "TagManager (tags, layers)", `tags ${[...BUILTIN_TAGS, ...tags].join(" ")} layers ${layers.join(" ")}`));
-    for (const t of [...BUILTIN_TAGS, ...tags]) addNode(o, `tag:${t}`, t, "tag", main.start, main.end, `tag "${t}"${BUILTIN_TAGS.includes(t) ? " (built-in)" : ""}`, `tag ${t}`);
-    layers.forEach((l, i) => {
-      if (l) addNode(o, `layer:${l}`, l, "layer", main.start, main.end, `layer ${i} "${l}"`, `layer ${l} ${i}`);
+    // built-in tags are not in the file; user tags and layers sit on their own line
+    for (const t of BUILTIN_TAGS) addNode(o, `tag:${t}`, t, "tag", main.start, main.end, `tag "${t}" (built-in)`, `tag ${t}`);
+    for (const i of tagItems) addNode(o, `tag:${i.v[""]}`, i.v[""], "tag", i.line, i.line, `tag "${i.v[""]}"`, `tag ${i.v[""]}`);
+    layerItems.forEach((it, i) => {
+      const l = it.v[""];
+      if (l) addNode(o, `layer:${l}`, l, "layer", it.line, it.line, `layer ${i} "${l}"`, `layer ${l} ${i}`);
     });
     return { asset };
   }

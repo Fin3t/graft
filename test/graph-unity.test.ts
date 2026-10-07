@@ -234,6 +234,13 @@ test("ask: an asset hit names who uses it", async () => {
   const hit = r.hits.find((h) => h.pointer === "Assets/Prefabs/Walker.prefab");
   assert.ok(hit, r.hits.map((h) => h.pointer).join("\n"));
   assert.ok(hit.wiring?.some((w) => /^nests ← Assets\/Scenes\/Level\.unity/.test(w)), JSON.stringify(hit.wiring));
+  // a layer sits on its own line and names who uses it, in code and in assets
+  const layer = (await graph()).nodes.find((n) => n.kind === "layer" && n.name === "Enemy")!;
+  assert.equal(layer.span, "L17-L17");
+  const lr = ask(repoDir, "Enemy layer", { source: false }).hits.find((h) => h.title === "Enemy · layer");
+  assert.ok(lr, "the layer is a hit");
+  assert.ok(lr.wiring?.some((w) => /Level\.unity.*via .*m_LayerMask/.test(w)), JSON.stringify(lr.wiring));
+  assert.ok(lr.wiring?.some((w) => /Spawner\.cs/.test(w)), JSON.stringify(lr.wiring));
 });
 
 test("Unity: an incremental build equals a cold one (resolver enrichment never accumulates)", async () => {
