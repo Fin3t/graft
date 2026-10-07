@@ -27,6 +27,17 @@ export const SKIP_DIRS = new Set([
 /** Files above this size are generated/vendored in practice, not hand-written code. */
 export const MAX_FILE_BYTES = 1_000_000;
 
+/** Unity's text-serialized scenes, prefabs and assets are authored content even when
+ * they are several megabytes (a level scene easily is); the Unity layer scans them
+ * line by line, so they get a far higher ceiling than source code. */
+const UNITY_YAML_EXT = /\.(unity|prefab|asset|controller|anim|mat|playable|overridecontroller)$/i;
+const UNITY_MAX_FILE_BYTES = 64_000_000;
+
+/** The size ceiling for one file (see {@link MAX_FILE_BYTES}). */
+export function maxBytesFor(path: string): number {
+  return UNITY_YAML_EXT.test(path) ? UNITY_MAX_FILE_BYTES : MAX_FILE_BYTES;
+}
+
 /**
  * Whether a directory named `name` should be skipped when walking a repo tree:
  * any dot-prefixed directory (`.git`, `.github`, `.vscode`, ...) or one of
@@ -273,7 +284,7 @@ function gitVisibleFiles(
 
     try {
       const stat = lstatSync(abs);
-      if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
+      if (!stat.isFile() || stat.size > maxBytesFor(abs)) continue;
     } catch {
       // A tracked file deleted from the working tree is still printed by
       // `--cached`; absence means it is not part of the current source set.
@@ -308,7 +319,7 @@ function gitVisibleFilesShallow(root: string, includes?: ReadonlySet<string>): s
     const abs = resolve(root, rel);
     try {
       const stat = lstatSync(abs);
-      if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
+      if (!stat.isFile() || stat.size > maxBytesFor(abs)) continue;
     } catch {
       // A tracked file deleted from the working tree is still printed by
       // `--cached`; absence means it is not part of the current source set.
@@ -336,7 +347,7 @@ function walkFilesystem(dir: string, includes?: ReadonlySet<string>): string[] {
     } else if (entry.isFile()) {
       if (entry.name.startsWith(".")) continue; // dot-files are not source either
       try {
-        if (statSync(full).size > MAX_FILE_BYTES) continue;
+        if (statSync(full).size > maxBytesFor(full)) continue;
       } catch {
         continue;
       }

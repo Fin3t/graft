@@ -37,7 +37,11 @@ const DEFAULT_DEPTH = 1;
  * same human report format as the CLI, rather than re-implementing it — both
  * surfaces walk the same edges via the same `resolveSymbol` / `edgeWalk` core. */
 export function headerOf(n: NodeV1): string {
-  return `${n.name} · ${n.kind} · ${n.path}:${n.span}`;
+  const pkg = n.pkg ? ` · package ${n.pkg} (third-party)` : "";
+  const head = `${n.name} · ${n.kind} · ${n.path}:${n.span}${pkg}`;
+  // Called by the engine / an editor / the test runner rather than by repo code:
+  // say so up front, so an empty callers list never reads as dead code.
+  return n.entry ? `${head}\n  ⚙ ${n.entry}` : head;
 }
 
 /** `showDepth` is set for multi-hop walks (depth > 1), matching the old
@@ -50,8 +54,14 @@ export function headerOf(n: NodeV1): string {
 export function hitLine(direction: Direction, hit: EdgeHit, showDepth: boolean, quote?: Quote): string {
   const arrow = ARROW[direction];
   const depthTag = showDepth ? ` [depth ${hit.depth}]` : "";
-  const label = hit.node ? `${hit.node.name} (${hit.node.path}:${hit.node.span})` : `${hit.id} (unresolved import)`;
-  const line = `  ${hit.relation} ${arrow} ${label}${depthTag}`;
+  // A scene/prefab component is named after its GameObject ("Window A"); its
+  // hierarchy path ("Shell/Section 2/Window A") is what tells two of them apart.
+  const display = hit.node?.kind === "component" ? (/ on "(.*)"$/.exec(hit.node.signature ?? "")?.[1] ?? hit.node.name) : hit.node?.name;
+  const label = hit.node
+    ? `${display} (${hit.node.path}:${hit.node.span})${hit.node.pkg ? ` [package ${hit.node.pkg}]` : ""}`
+    : `${hit.id} (${hit.relation === "imports" ? "unresolved import" : "outside the repo"})`;
+  const via = hit.via ? ` via ${hit.via}` : "";
+  const line = `  ${hit.relation} ${arrow} ${label}${via}${depthTag}`;
   return quote ? `${line}\n      ${quote.n}: ${quote.text.trim()}` : line;
 }
 
@@ -100,7 +110,8 @@ export function callersSavings(
  * `resolve.ts` drops a cross-file call/reference for rather than guessing which
  * one it means. Without saying so, a zero-hit result here reads as "nothing
  * calls this" when it may really be "something does, but the edge was dropped". */
-export function looseNoteFor(direction: Direction, name: string, candidateCount: number): string {
+export function looseNoteFor(direction: Direction, name: string, candidateCount: number, entry?: string): string {
+  if (entry && direction === "in") return "  no callers in the repo's code — it is called by the engine/tooling (see ⚙ above)";
   const label = direction === "out" ? "callees" : "callers";
   const dir = direction === "out" ? "outgoing" : "incoming";
   const ambiguity =
@@ -116,6 +127,7 @@ interface SymbolJson {
   kind: string;
   path: string;
   span: string;
+  entry?: string;
 }
 
 interface MatchJson {
@@ -132,14 +144,18 @@ interface HitJson {
   span?: string;
   relation: string;
   depth: number;
+  via?: string;
 }
 
 function symbolJson(n: NodeV1): SymbolJson {
-  return { id: n.id, name: n.name, kind: n.kind, path: n.path, span: n.span };
+  const out: SymbolJson = { id: n.id, name: n.name, kind: n.kind, path: n.path, span: n.span };
+  if (n.entry) out.entry = n.entry;
+  return out;
 }
 
 function hitJson(hit: EdgeHit): HitJson {
   const out: HitJson = { id: hit.id, relation: hit.relation, depth: hit.depth };
+  if (hit.via) out.via = hit.via;
   if (hit.node) {
     out.name = hit.node.name;
     out.kind = hit.node.kind;
@@ -147,6 +163,15 @@ function hitJson(hit: EdgeHit): HitJson {
     out.span = hit.node.span;
   }
   return out;
+}
+
+/** Wiring before mentions: calls, engine/asset wiring and heritage first, plain
+ * `references` (a type named in a signature, a field read) last — stable within
+ * each group. A class used in 100 signatures must not bury the 8 prefabs that
+ * actually carry it. */
+export function orderHits(hits: EdgeHit[]): EdgeHit[] {
+  const rank = (h: EdgeHit) => (h.relation === "references" ? 1 : 0);
+  return hits.map((h, i) => ({ h, i })).sort((a, b) => rank(a.h) - rank(b.h) || a.i - b.i).map((x) => x.h);
 }
 
 /** Parse and validate the raw `--direction` string; exits (code 1) on garbage. */
@@ -209,7 +234,7 @@ export function runCallersCommand(query: string, dir: string, opts: CallersCliOp
   }
   const showDepth = depth > 1;
 
-  const results = matches.map((symbol) => ({ symbol, hits: edgeWalk(graph, symbol, direction, depth) }));
+  const results = matches.map((symbol) => ({ symbol, hits: orderHits(edgeWalk(graph, symbol, direction, depth)) }));
   const saved = callersSavings(graph, results);
 
   if (opts.json) {
@@ -218,7 +243,7 @@ export function runCallersCommand(query: string, dir: string, opts: CallersCliOp
       matches: results.map((r): MatchJson => {
         const m: MatchJson = { symbol: symbolJson(r.symbol), hits: r.hits.map(hitJson) };
         if (r.hits.length === 0) {
-          m.note = looseNoteFor(direction, r.symbol.name, matches.length);
+          m.note = looseNoteFor(direction, r.symbol.name, matches.length, r.symbol.entry);
         }
         return m;
       }),
@@ -233,7 +258,7 @@ export function runCallersCommand(query: string, dir: string, opts: CallersCliOp
   const read = fileReader(root);
   for (const { symbol, hits } of results) {
     lines.push(headerOf(symbol));
-    if (hits.length === 0) lines.push(looseNoteFor(direction, symbol.name, matches.length));
+    if (hits.length === 0) lines.push(looseNoteFor(direction, symbol.name, matches.length, symbol.entry));
     else for (const h of hits) lines.push(hitLine(direction, h, showDepth, quoteFor(h, symbol.name, read)));
     lines.push("");
   }

@@ -16,8 +16,10 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
-const KINDS = new Set(["file","class","function","method","interface","type","enum","struct","module","constant","variable"]);
-const RELATIONS = new Set(["contains","calls","imports","references","implements","extends"]);
+const KINDS = new Set(["file","class","function","method","interface","type","enum","struct","module","constant","variable",
+  "property","field","event","component","asset","state","parameter","action","tag","layer"]);
+const RELATIONS = new Set(["contains","calls","imports","references","implements","extends",
+  "overrides","subscribes","attaches","nests","variant_of","instance_of","assigns","invokes","loads","sets","plays","uses_shader","compiles"]);
 const CONFIDENCE = new Set(["lsp_resolved","lsp_dispatch","extracted","inferred"]);
 
 const arg = process.argv[2] ?? ".";
@@ -57,7 +59,7 @@ for (const e of edges) {
   if (!ids.has(e.source)) { problems.push(`dangling source: ${e.source}`); dangling++; }
   const targetIsNode = ids.has(e.target);
   if (!targetIsNode) {
-    if (e.relation === "imports" || e.relation === "extends" || e.relation === "implements" || e.relation === "references") unresolvedExternal++;
+    if (["imports", "extends", "implements", "references", "attaches", "uses_shader", "overrides", "assigns", "nests", "instance_of", "variant_of"].includes(e.relation)) unresolvedExternal++;
     else { problems.push(`dangling ${e.relation} target: ${e.source} → ${e.target}`); dangling++; }
   }
   if (e.relation === "calls" && e.source === e.target) selfLoops++;

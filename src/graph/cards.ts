@@ -182,6 +182,10 @@ export function writeCards(graph: GraphV1, outDir: string): CardStats {
 
   for (const [sourcePath, group] of byPath) {
     const fileNode = group.find((n) => n.kind === "file");
+    // Nodes minted by a resolver for something graft does not parse (a texture
+    // known only from its `.meta`, a package asset, a predefined Unity assembly)
+    // have no file of their own to mirror — no card.
+    if (!fileNode && group.every((n) => n.kind === "asset" || n.kind === "module")) continue;
     const symbols = group.filter((n) => n.kind !== "file");
     const cardPath = cardPathFor(outDir, sourcePath);
     mkdirSync(dirname(cardPath), { recursive: true });

@@ -1,0 +1,5 @@
+{
+  "name": "Game.Tools",
+  "references": ["Game", "GUID:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeee1"],
+  "includePlatforms": ["Editor"]
+}

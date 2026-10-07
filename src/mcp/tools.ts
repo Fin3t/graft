@@ -10,7 +10,7 @@ import { loadGraphCached } from '../graph/load.js';
 import { ensureFreshChildren, ensureFreshGraph, refreshNote } from '../graph/refresh.js';
 import { contextDirFor } from '../context/node-file.js';
 import { resolveSymbol, edgeWalk, type Direction, type EdgeHit } from '../graph/traverse.js';
-import { callersSavings, headerOf, hitLine, looseNoteFor } from '../graph/traverse-cli.js';
+import { callersSavings, headerOf, hitLine, looseNoteFor, orderHits } from '../graph/traverse-cli.js';
 import { withSavings, setInputRate } from '../context/savings.js';
 import { sessionInputRate } from '../claude/session-metrics.js';
 import { grepGraph } from '../search/grep.js';
@@ -137,9 +137,9 @@ function renderMatches(
 ): string {
   return matches
     .map((m) => {
-      const hits = hitsFor(m);
+      const hits = orderHits(hitsFor(m));
       const lines = [headerOf(m)];
-      if (hits.length === 0) lines.push(looseNoteFor(direction, m.name, matches.length));
+      if (hits.length === 0) lines.push(looseNoteFor(direction, m.name, matches.length, m.entry));
       else for (const h of hits) lines.push(hitLine(direction, h, showDepth));
       return lines.join('\n');
     })

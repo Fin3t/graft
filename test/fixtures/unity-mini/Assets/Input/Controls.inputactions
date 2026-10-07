@@ -1,0 +1,17 @@
+{
+    "name": "Controls",
+    "maps": [
+        {
+            "name": "Gameplay",
+            "id": "1",
+            "actions": [
+                { "name": "Fire", "type": "Button", "id": "2", "expectedControlType": "Button" }
+            ],
+            "bindings": [
+                { "name": "", "id": "3", "path": "<Mouse>/leftButton", "groups": "Keyboard", "action": "Fire", "isComposite": false, "isPartOfComposite": false },
+                { "name": "", "id": "4", "path": "<Gamepad>/rightTrigger", "groups": "Gamepad", "action": "Fire", "isComposite": false, "isPartOfComposite": false }
+            ]
+        }
+    ],
+    "controlSchemes": []
+}

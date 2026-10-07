@@ -21,6 +21,10 @@ import { extractFile, languageLabelOf, languageOf, type FileFacts, type RawEdge 
 import { extractGeneric, genericLangOf, warmGenericGrammars } from "./generic.js";
 import { containerLangOf, extractContainer, warmContainerGrammars } from "./container.js";
 import { extractCSharp, isCSharpPath, warmCSharp } from "./csharp.js";
+import { extractUnity, unityKindOf, unityLabelOf } from "./unity.js";
+import { loadPackageIndex } from "./unity-packages.js";
+import { CACHE_DIR } from "../context/node-file.js";
+import { join } from "node:path";
 import { contentHash } from "../util/id.js";
 import { relPosix } from "../util/paths.js";
 import { readSourceFile } from "../util/source.js";
@@ -149,6 +153,19 @@ function readGoModules(root: string, repoFiles: string[]): GoModule[] {
   return mods;
 }
 
+/** `-executeMethod Ns.Type.Method` mentions anywhere in the indexed sources (build
+ * scripts, CI, docs-in-comments): the methods Unity's batch mode calls directly. */
+function executeMethodTargets(sources: Map<string, string>): Array<{ method: string; file: string; line: number }> {
+  const out: Array<{ method: string; file: string; line: number }> = [];
+  for (const [file, src] of sources) {
+    if (!src.includes("-executeMethod")) continue;
+    for (const m of src.matchAll(/-executeMethod\s+([A-Za-z_][\w.]*\.[A-Za-z_]\w*)/g)) {
+      out.push({ method: m[1], file, line: src.slice(0, m.index).split("\n").length });
+    }
+  }
+  return out;
+}
+
 export async function buildGraph(
   dir: string,
   opts: GraphBuildOptions = {},
@@ -214,12 +231,18 @@ export async function buildGraph(
     // otherwise the breadth tier (generic tags.scm over a WASM grammar).
     const lang = languageOf(f.abs);
     const cs = !lang && csharp && isCSharpPath(f.abs);
+    // Unity assets (scenes, prefabs, `.meta`, materials, …) — the asset layer.
+    const unity = !lang && !cs ? unityKindOf(f.abs) : null;
     // A container is neither tier: its wrapper grammar only locates the embedded
     // block, which then goes to the depth-tier extractor. Checked before the
     // breadth tier so a future grammar claiming .vue can't shadow it.
-    const container = lang || cs ? null : containerLangOf(f.abs);
-    const generic = lang || cs || container ? null : genericLangOf(f.abs);
-    const label = languageLabelOf(f.abs) ?? (cs ? "c_sharp" : undefined) ?? container?.name ?? generic?.name ?? "unknown";
+    const container = lang || cs || unity ? null : containerLangOf(f.abs);
+    const generic = lang || cs || unity || container ? null : genericLangOf(f.abs);
+    const label =
+      languageLabelOf(f.abs) ?? (cs ? "c_sharp" : undefined) ?? (unity ? unityLabelOf(f.abs) : null) ?? container?.name ?? generic?.name ?? "unknown";
+    // Asset text is not code: never handed to the summarizer, and a scene can be
+    // megabytes — keep it out of the in-memory source map.
+    const keepSource = !unity || unity === "shader";
     const cached = priorExtract.files[rel];
 
     // Every file is read and hashed, every build — only the *parse* is memoized.
@@ -252,7 +275,7 @@ export async function buildGraph(
     const hash = contentHash(source);
     if (cached && hash === cached.hash) {
       entries[rel] = { ...cached, size: f.size, mtimeMs: f.mtimeMs };
-      sources.set(rel, source);
+      if (keepSource) sources.set(rel, source);
       reused++;
       if (cached.error) {
         errors.push(cached.error); // this file failed to parse last time too
@@ -271,13 +294,15 @@ export async function buildGraph(
         ? extractFile(rel, source, lang)
         : cs
           ? extractCSharp(rel, source)
-          : container
+          : unity
+            ? extractUnity(rel, source)
+            : container
             ? extractContainer(rel, source, container)
             : extractGeneric(rel, source, generic!.name);
       nodes.push(...fileNodes);
       rawEdges.push(...fileEdges);
       if (fileFacts) facts.set(rel, fileFacts);
-      sources.set(rel, source);
+      if (keepSource) sources.set(rel, source);
       langs.add(label);
       entries[rel] = {
         size: f.size,
@@ -305,7 +330,14 @@ export async function buildGraph(
     files: entries,
   });
 
-  const edges = resolveEdges(nodes, rawEdges, { goModules: readGoModules(root, repoFiles), facts });
+  const unityProject = [...facts.values()].some((x) => x.unity);
+  const edges = resolveEdges(nodes, rawEdges, {
+    goModules: readGoModules(root, repoFiles),
+    facts,
+    ...(unityProject
+      ? { unity: { packages: loadPackageIndex(root, join(outDir, CACHE_DIR)), executeMethods: executeMethodTargets(sources) } }
+      : {}),
+  });
 
   // Guard 5 (minimum-substance): node counts aren't known until nodes are
   // assembled, so the merge-tiny-scopes-into-root guard runs here.

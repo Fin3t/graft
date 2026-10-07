@@ -1,0 +1,35 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!91 &9100000
+AnimatorController:
+  m_ObjectHideFlags: 0
+  m_Name: Zombie
+  m_AnimatorParameters:
+  - m_Name: Attack
+    m_Type: 9
+    m_DefaultFloat: 0
+  m_AnimatorLayers:
+  - serializedVersion: 5
+    m_Name: Base Layer
+    m_StateMachine: {fileID: 1107000}
+--- !u!1107 &1107000
+AnimatorStateMachine:
+  m_Name: Base Layer
+  m_ChildStates:
+  - serializedVersion: 1
+    m_State: {fileID: 1102000}
+    m_Position: {x: 0, y: 0, z: 0}
+  m_ChildStateMachines: []
+--- !u!1102 &1102000
+AnimatorState:
+  serializedVersion: 6
+  m_Name: Swing
+  m_Transitions: []
+  m_StateMachineBehaviours:
+  - {fileID: 11400000}
+  m_Motion: {fileID: 7400000, guid: ddddddddddddddddddddddddddddddd2, type: 2}
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 1
+  m_Script: {fileID: 11500000, guid: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3, type: 3}
+  m_Name: 

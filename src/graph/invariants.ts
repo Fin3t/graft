@@ -27,7 +27,7 @@ const KINDS = new Set<string>([
   "file", "class", "function", "method", "interface",
   "type", "enum", "struct", "module", "constant", "variable",
   "property", "field", "event",
-  "gameobject", "asset", "state", "parameter", "action", "tag", "layer",
+  "component", "asset", "state", "parameter", "action", "tag", "layer",
 ]);
 const RELATIONS = new Set<string>([
   "contains", "calls", "imports", "references", "implements", "extends",

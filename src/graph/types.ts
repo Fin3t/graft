@@ -36,10 +36,10 @@ export type Kind =
   | "property"
   | "field"
   | "event"
-  // Unity layer (unity.ts): a GameObject in a scene/prefab, an asset known only
+  // Unity layer (unity.ts): a script/Animator component on a GameObject in a scene/prefab, an asset known only
   // through its `.meta` (texture, mesh, audio, folder), an Animator state or
   // parameter, an Input System action, and a tag/layer from TagManager.asset.
-  | "gameobject"
+  | "component"
   | "asset"
   | "state"
   | "parameter"

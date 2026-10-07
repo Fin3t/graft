@@ -393,7 +393,7 @@ export function typeText(n: TsNode | null | undefined): string | null {
   if (!n) return null;
   if (n.type === "implicit_type") return null;
   if (n.type === "tuple_type") return "(" + n.namedChildren.map((c) => typeText(c.childForFieldName("type")) ?? "?").join(",") + ")";
-  return n.text.replace(/\s+/g, "").replace(/global::/g, "");
+  return n.text.replace(/\s+/g, "").replace(/global::/g, "").replace(/(^|[^\w])@/g, "$1");
 }
 
 /** Predefined/primitive spellings, mapped to the CLR type the resolver keys on. */
@@ -459,7 +459,7 @@ function attributesOf(n: TsNode): { attrs: CsAttr[]; lists: TsNode[] } {
     lists.push(c);
     for (const a of c.namedChildren) {
       if (a.type !== "attribute") continue;
-      const name = a.childForFieldName("name")?.text;
+      const name = a.childForFieldName("name")?.text.replace(/^@/, "");
       if (!name) continue;
       const args: string[] = [];
       const argList = a.namedChildren.find((x) => x.type === "attribute_argument_list");
@@ -482,7 +482,7 @@ function typeParamsOf(n: TsNode): string[] {
   if (!list) return [];
   return list.namedChildren
     .filter((c) => c.type === "type_parameter")
-    .map((c) => c.childForFieldName("name")?.text ?? c.text)
+    .map((c) => c.childForFieldName("name")?.text.replace(/^@/, "") ?? c.text)
     .filter(Boolean);
 }
 
@@ -515,7 +515,7 @@ function paramsOf(n: TsNode): { params: CsParam[]; variadic: boolean } {
     const c = kids[i];
     if (c.type === "parameter") {
       const t = typeText(c.childForFieldName("type")) ?? "?";
-      const name = c.childForFieldName("name")?.text ?? "";
+      const name = c.childForFieldName("name")?.text.replace(/^@/, "") ?? "";
       const mod = c.namedChildren.find((x) => x.type === "modifier")?.text;
       const p: CsParam = mod ? { t, n: name, m: mod } : { t, n: name };
       if (c.children.some((x) => x.text === "=")) p.d = 1;
@@ -717,7 +717,7 @@ function walkDecls(children: TsNode[], ctx: Ctx, w: Where): void {
         addUsing(c, ctx, cur.u);
         break;
       case "namespace_declaration": {
-        const u = pushScope(ctx, cur.u, c.childForFieldName("name")?.text ?? "");
+        const u = pushScope(ctx, cur.u, c.childForFieldName("name")?.text.replace(/^@/, "") ?? "");
         const body = c.childForFieldName("body");
         if (body) walkDecls(body.namedChildren, ctx, { ...cur, u });
         break;
@@ -725,7 +725,7 @@ function walkDecls(children: TsNode[], ctx: Ctx, w: Where): void {
       case "file_scoped_namespace_declaration": {
         // Applies to every following sibling; its own named children (if the
         // grammar nests them) are walked too.
-        const u = pushScope(ctx, cur.u, c.childForFieldName("name")?.text ?? "");
+        const u = pushScope(ctx, cur.u, c.childForFieldName("name")?.text.replace(/^@/, "") ?? "");
         cur = { ...cur, u };
         const inner = c.namedChildren.filter((x) => x.type !== "qualified_name" && x.type !== "identifier");
         if (inner.length) walkDecls(inner, ctx, cur);
@@ -752,7 +752,7 @@ function addUsing(n: TsNode, ctx: Ctx, u: number): void {
   const tokens = n.children.filter((c) => !c.isNamed).map((c) => c.text);
   const isGlobal = tokens.includes("global");
   const isStatic = tokens.includes("static");
-  const alias = n.childForFieldName("name")?.text;
+  const alias = n.childForFieldName("name")?.text.replace(/^@/, "");
   const target = n.namedChildren.filter((c) => c.type !== "identifier" || !alias || c.text !== alias).at(-1);
   const text = typeText(target ?? null);
   if (!text) return;
@@ -808,7 +808,7 @@ function pushNode(
 
 function emitType(n: TsNode, ctx: Ctx, w: Where): void {
   const kind = TYPE_DECLS[n.type];
-  const name = n.childForFieldName("name")?.text;
+  const name = n.childForFieldName("name")?.text.replace(/^@/, "");
   if (!name) return;
   const mods = modifiers(n);
   const tparams = typeParamsOf(n);
@@ -874,7 +874,7 @@ function emitType(n: TsNode, ctx: Ctx, w: Where): void {
   if (kind === "enum") {
     for (const m of body.namedChildren) {
       if (m.type !== "enum_member_declaration") continue;
-      const mn = m.childForFieldName("name")?.text;
+      const mn = m.childForFieldName("name")?.text.replace(/^@/, "");
       if (mn) ctx.facts.members.push({ id: "", owner: id, name: mn, mk: "enum", type: name, static: true });
     }
     return;
@@ -927,7 +927,7 @@ function emitMethod(m: TsNode, ctx: Ctx, w: Where, inInterface: boolean): void {
   let mk: CsMemberKind = "method";
   let type: string | null = null;
   if (m.type === "constructor_declaration") {
-    name = w.typeName ?? m.childForFieldName("name")?.text ?? "";
+    name = w.typeName ?? m.childForFieldName("name")?.text.replace(/^@/, "") ?? "";
     mk = mods.has("static") ? "cctor" : "ctor";
   } else if (m.type === "destructor_declaration") {
     name = `~${w.typeName ?? ""}`;
@@ -942,7 +942,7 @@ function emitMethod(m: TsNode, ctx: Ctx, w: Where, inInterface: boolean): void {
     name = `operator ${type ?? "?"}`;
     mk = "op";
   } else {
-    name = m.childForFieldName("name")?.text ?? "";
+    name = m.childForFieldName("name")?.text.replace(/^@/, "") ?? "";
     type = typeText(m.childForFieldName("returns") ?? m.childForFieldName("type"));
   }
   if (!name) return;
@@ -997,7 +997,7 @@ function emitProperty(m: TsNode, ctx: Ctx, w: Where, inInterface: boolean): void
   const mods = modifiers(m);
   const isIndexer = m.type === "indexer_declaration";
   const isEvent = m.type === "event_declaration";
-  const name = isIndexer ? "this[]" : (m.childForFieldName("name")?.text ?? "");
+  const name = isIndexer ? "this[]" : (m.childForFieldName("name")?.text.replace(/^@/, "") ?? "");
   if (!name) return;
   const type = typeText(m.childForFieldName("type"));
   const accessors = m.childForFieldName("accessors") ?? m.namedChildren.find((c) => c.type === "accessor_list");
@@ -1057,7 +1057,7 @@ function emitFields(m: TsNode, ctx: Ctx, w: Where, inInterface: boolean): void {
     !attrs.some((a) => a.n === "NonSerialized");
   const declarators = decl.namedChildren.filter((c) => c.type === "variable_declarator");
   for (const d of declarators) {
-    const name = d.childForFieldName("name")?.text ?? d.namedChildren[0]?.text;
+    const name = d.childForFieldName("name")?.text.replace(/^@/, "") ?? d.namedChildren[0]?.text;
     if (!name) continue;
     // Each declarator is its own node; the declaration's attributes and type are
     // shared, so the span is the whole declaration when it declares only one.
@@ -1108,7 +1108,7 @@ function emitFields(m: TsNode, ctx: Ctx, w: Where, inInterface: boolean): void {
 function hashInit(n: TsNode): { kind: "anim" | "prop"; values: StrVal[] } | null {
   if (n.type !== "invocation_expression") return null;
   const fn = n.childForFieldName("function");
-  const name = fn?.type === "member_access_expression" ? fn.childForFieldName("name")?.text : fn?.text;
+  const name = fn?.type === "member_access_expression" ? fn.childForFieldName("name")?.text.replace(/^@/, "") : fn?.text;
   if (name !== "StringToHash" && name !== "PropertyToID") return null;
   const arg = n.childForFieldName("arguments")?.namedChildren[0]?.namedChildren.at(-1) ?? null;
   const values = arg ? strValues(arg, null) : [];
@@ -1152,7 +1152,7 @@ function ir(n: TsNode | null | undefined, env: Env | null, depth = 0): Expr | nu
   switch (n.type) {
     case "identifier": {
       const v = lookup(env, n.text);
-      if (v === undefined) return ["i", n.text];
+      if (v === undefined) return ["i", n.text.replace(/^@/, "")];
       if (v === null || !Array.isArray(v)) return null;
       return v;
     }
@@ -1171,7 +1171,7 @@ function ir(n: TsNode | null | undefined, env: Env | null, depth = 0): Expr | nu
     case "qualified_name":
     case "alias_qualified_name": {
       const q = n.childForFieldName("qualifier") ?? n.childForFieldName("alias");
-      const name = n.childForFieldName("name")?.text;
+      const name = n.childForFieldName("name")?.text.replace(/^@/, "");
       if (!name) return null;
       if (n.type === "alias_qualified_name" && q?.text === "global") return ["i", name];
       const r = ir(q, env, depth + 1);
@@ -1180,7 +1180,7 @@ function ir(n: TsNode | null | undefined, env: Env | null, depth = 0): Expr | nu
     case "member_access_expression": {
       const obj = n.childForFieldName("expression");
       const nameNode = n.childForFieldName("name");
-      const name = nameNode?.type === "generic_name" ? nameNode.namedChildren[0]?.text : nameNode?.text;
+      const name = (nameNode?.type === "generic_name" ? nameNode.namedChildren[0]?.text : nameNode?.text)?.replace(/^@/, "");
       if (!name) return null;
       if (!obj) return null;
       const r = ir(obj, env, depth + 1);
@@ -1360,7 +1360,7 @@ function strValues(n: TsNode | null, env: Env | null, depth = 0): StrVal[] {
     }
     case "invocation_expression": {
       const fn = n.childForFieldName("function");
-      const name = fn?.type === "member_access_expression" ? fn.childForFieldName("name")?.text : fn?.text;
+      const name = fn?.type === "member_access_expression" ? fn.childForFieldName("name")?.text.replace(/^@/, "") : fn?.text;
       const args = n.childForFieldName("arguments")?.namedChildren ?? [];
       if (name === "nameof") {
         const a = args[0]?.namedChildren.at(-1);
@@ -1402,7 +1402,7 @@ function walkBody(n: TsNode, ctx: Ctx, w: Where, env: Env, source: string, ret?:
       // local functions are visible across the whole block
       for (const c of n.namedChildren) {
         if (c.type === "local_function_statement") {
-          const name = c.childForFieldName("name")?.text;
+          const name = c.childForFieldName("name")?.text.replace(/^@/, "");
           if (!name) continue;
           const id = mint(`${ctx.rel}#${[...w.scope, name].join(".")}`, ctx.minted);
           ctx.localFnIds.set(c.startIndex, id);
@@ -1413,7 +1413,7 @@ function walkBody(n: TsNode, ctx: Ctx, w: Where, env: Env, source: string, ret?:
       return;
     }
     case "local_function_statement": {
-      const name = n.childForFieldName("name")?.text ?? "";
+      const name = n.childForFieldName("name")?.text.replace(/^@/, "") ?? "";
       let id = ctx.localFnIds.get(n.startIndex);
       if (!id) {
         id = mint(`${ctx.rel}#${[...w.scope, name].join(".")}`, ctx.minted);
@@ -1451,7 +1451,7 @@ function walkBody(n: TsNode, ctx: Ctx, w: Where, env: Env, source: string, ret?:
       if (t) typeRef(ctx, w, source, t);
       for (const d of decl.namedChildren) {
         if (d.type !== "variable_declarator") continue;
-        const name = d.childForFieldName("name")?.text ?? d.namedChildren[0]?.text;
+        const name = d.childForFieldName("name")?.text.replace(/^@/, "") ?? d.namedChildren[0]?.text;
         const init = d.namedChildren.find((c, i) => i > 0 && c.type !== "bracketed_argument_list");
         if (init) {
           if (init.type === "implicit_object_creation_expression" && t) {
@@ -1496,7 +1496,7 @@ function walkBody(n: TsNode, ctx: Ctx, w: Where, env: Env, source: string, ret?:
       const decl = n.namedChildren.find((c) => c.type === "catch_declaration");
       if (decl) {
         const t = typeText(decl.childForFieldName("type"));
-        const nm = decl.childForFieldName("name")?.text;
+        const nm = decl.childForFieldName("name")?.text.replace(/^@/, "");
         if (t) typeRef(ctx, w, source, t);
         if (nm && t) scoped.vars.set(nm, ["T", t]);
       }
@@ -1506,7 +1506,7 @@ function walkBody(n: TsNode, ctx: Ctx, w: Where, env: Env, source: string, ret?:
     case "declaration_pattern":
     case "declaration_expression": {
       const t = typeText(n.childForFieldName("type"));
-      const nm = n.childForFieldName("name")?.text;
+      const nm = n.childForFieldName("name")?.text.replace(/^@/, "");
       if (t) typeRef(ctx, w, source, t);
       if (nm) env.vars.set(nm, t ? ["T", t] : outVarType(n, env));
       return;
@@ -1542,7 +1542,7 @@ function walkBody(n: TsNode, ctx: Ctx, w: Where, env: Env, source: string, ret?:
       else
         for (const p of ps?.namedChildren ?? []) {
           const t = typeText(p.childForFieldName("type"));
-          const nm = p.childForFieldName("name")?.text ?? (p.type === "identifier" || p.type === "implicit_parameter" ? p.text : undefined);
+          const nm = p.childForFieldName("name")?.text.replace(/^@/, "") ?? (p.type === "identifier" || p.type === "implicit_parameter" ? p.text : undefined);
           if (!nm) continue;
           if (t) {
             scoped.vars.set(nm, ["T", t]);
@@ -1559,7 +1559,7 @@ function walkBody(n: TsNode, ctx: Ctx, w: Where, env: Env, source: string, ret?:
       const scoped: Env = { vars: new Map(), parent: env };
       for (const c of n.namedChildren) {
         if (c.type === "from_clause" || c.type === "join_clause") {
-          const nm = c.childForFieldName("name")?.text;
+          const nm = c.childForFieldName("name")?.text.replace(/^@/, "");
           const src = c.namedChildren.filter((x) => x.type !== "identifier" || x.text !== nm).at(-1);
           if (src) walkBody(src, ctx, w, scoped, source, ret);
           const coll = ir(src, scoped);
@@ -1624,7 +1624,7 @@ function walkBody(n: TsNode, ctx: Ctx, w: Where, env: Env, source: string, ret?:
       if (right) walkBody(right, ctx, w, env, source, ret);
       // `strike = new InputAction("Melee", …)` assigns a field or local
       if (right?.type === "object_creation_expression" && left) {
-        const nm = left.type === "identifier" ? left.text : left.childForFieldName("name")?.text;
+        const nm = left.type === "identifier" ? left.text : left.childForFieldName("name")?.text.replace(/^@/, "");
         if (nm) maybeInputAction(right, ctx, w, nm);
       }
       return;
@@ -1683,7 +1683,7 @@ function walkBody(n: TsNode, ctx: Ctx, w: Where, env: Env, source: string, ret?:
         const l = n.childForFieldName("left");
         const r = n.childForFieldName("right");
         for (const [a, b] of [[l, r], [r, l]] as const) {
-          if (a && b && (a.type === "member_access_expression" ? a.childForFieldName("name")?.text === "tag" : a.text === "tag")) {
+          if (a && b && (a.type === "member_access_expression" ? a.childForFieldName("name")?.text.replace(/^@/, "") === "tag" : a.text === "tag")) {
             const v = strValues(b, env);
             if (v.length) unityIntent(ctx, w, source, { op: "tag==", args: [v] });
           }
@@ -1895,7 +1895,7 @@ function rootName(n: TsNode): string | null {
   let cur: TsNode | null = n;
   while (cur?.type === "member_access_expression") {
     const obj: TsNode | null = cur.childForFieldName("expression");
-    if (obj?.type === "this" || obj?.text === "this") return cur.childForFieldName("name")?.text ?? null;
+    if (obj?.type === "this" || obj?.text === "this") return cur.childForFieldName("name")?.text.replace(/^@/, "") ?? null;
     cur = obj;
   }
   return cur?.type === "identifier" ? cur.text : null;
@@ -1918,7 +1918,7 @@ function maybeInputAction(creation: TsNode, ctx: Ctx, w: Where, varName: string)
   const t = typeText(creation.childForFieldName("type"));
   if (t !== "InputAction" && t !== "UnityEngine.InputSystem.InputAction") return;
   const args = creation.childForFieldName("arguments")?.namedChildren.filter((a) => a.type === "argument") ?? [];
-  const named = (label: string) => args.find((a) => a.childForFieldName("name")?.text === label)?.namedChildren.at(-1) ?? null;
+  const named = (label: string) => args.find((a) => a.childForFieldName("name")?.text.replace(/^@/, "") === label)?.namedChildren.at(-1) ?? null;
   const actionName = stringLiteral(named("name") ?? args[0]?.namedChildren.at(-1) ?? null);
   if (!actionName) return;
   const typeArg = (named("type") ?? args[1]?.namedChildren.at(-1))?.text.replace(/^InputActionType\./, "");

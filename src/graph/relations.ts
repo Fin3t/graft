@@ -17,4 +17,21 @@ export const WALK_RELATIONS: ReadonlySet<Relation> = new Set<Relation>([
   "imports",
   "implements",
   "extends",
+  // C# and the Unity asset layer: each is a dependency — changing the target can
+  // change what the source does (an override, a subscribed handler, the class a
+  // scene's component runs, the prefab it nests, the method a button invokes, the
+  // asset a string loads, the file an assembly compiles).
+  "overrides",
+  "subscribes",
+  "attaches",
+  "nests",
+  "variant_of",
+  "instance_of",
+  "assigns",
+  "invokes",
+  "loads",
+  "sets",
+  "plays",
+  "uses_shader",
+  "compiles",
 ]);

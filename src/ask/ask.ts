@@ -301,8 +301,12 @@ function matchedStrongTerms(
 
 const INCOMING = /\b(caller|callers|calls?\s+into|who\s+calls|what\s+calls|called\s+by|used\s+by|uses)\b/;
 const OUTGOING = /\b(callee|callees|what\s+does\s+\w+\s+call|calls\s+what|imports?|depends\s+on)\b/;
-const INCOMING_RELS: Relation[] = ["calls", "references", "implements", "extends"];
-const OUTGOING_RELS: Relation[] = ["calls", "references", "imports", "implements", "extends"];
+/** Unity/C# verbs read the same way: who wires this in, what this wires in. */
+const UNITY_RELS: Relation[] = [
+  "overrides", "subscribes", "attaches", "nests", "variant_of", "instance_of", "assigns", "invokes", "loads", "sets", "plays", "uses_shader", "compiles",
+];
+const INCOMING_RELS: Relation[] = ["calls", "references", "implements", "extends", ...UNITY_RELS];
+const OUTGOING_RELS: Relation[] = ["calls", "references", "imports", "implements", "extends", ...UNITY_RELS];
 
 /** Split a prose query into word-like tokens, keeping dots so a qualified name
  * ("Cache.get") or package-qualified name ("pkg.Fn") survives as one token —
@@ -379,7 +383,7 @@ function structural(query: string, graph: GraphV1, limit: number, inPrefix?: str
       kind: outgoing ? "callee" : "caller",
       title: node ? node.name : other, // unresolved import target → raw module string
       pointer: node ? `${node.path}:${node.span}` : other,
-      snippet: node?.summary?.split("\n")[0].trim() ?? node?.signature ?? "",
+      snippet: `${node?.summary?.split("\n")[0].trim() ?? node?.signature ?? ""}${e.via ? ` · via ${e.via}` : ""}`,
       relation: e.relation,
       score: 1,
     });
@@ -651,7 +655,7 @@ function lexical(
       kind: "symbol",
       title: `${n.name} · ${n.kind}`,
       pointer: n.kind === "file" ? n.path : `${n.path}:${n.span}`,
-      snippet: n.summary?.split("\n")[0].trim() ?? n.signature ?? "",
+      snippet: `${n.summary?.split("\n")[0].trim() ?? n.signature ?? ""}${n.entry ? ` ⚙ ${n.entry}` : ""}`,
       score: hitScore,
       ...(scope === undefined ? {} : { scope }),
     };

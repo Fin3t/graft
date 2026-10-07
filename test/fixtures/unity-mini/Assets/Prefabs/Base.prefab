@@ -1,0 +1,15 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1 &100
+GameObject:
+  m_ObjectHideFlags: 0
+  m_Component:
+  - component: {fileID: 101}
+  m_Layer: 0
+  m_Name: Base
+  m_TagString: Untagged
+--- !u!4 &101
+Transform:
+  m_GameObject: {fileID: 100}
+  m_Children: []
+  m_Father: {fileID: 0}

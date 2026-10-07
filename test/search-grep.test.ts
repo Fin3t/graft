@@ -90,10 +90,15 @@ function loadBuiltGraph(repo: string): GraphV1 {
   return g!;
 }
 
-test('WALK_RELATIONS (shared, src/graph/relations.ts): exactly the five dependency relations', () => {
+test('WALK_RELATIONS (shared, src/graph/relations.ts): exactly the dependency relations', () => {
   assert.deepEqual(
     [...WALK_RELATIONS].sort(),
-    ['calls', 'extends', 'implements', 'imports', 'references'].sort(),
+    [
+      'calls', 'extends', 'implements', 'imports', 'references',
+      // C# depth tier + Unity asset layer (only ever emitted for .cs / Unity assets)
+      'overrides', 'subscribes', 'attaches', 'nests', 'variant_of', 'instance_of', 'assigns',
+      'invokes', 'loads', 'sets', 'plays', 'uses_shader', 'compiles',
+    ].sort(),
   );
   // Excluded on purpose: contains is structural (file->symbol), not dependency wiring.
   assert.equal(WALK_RELATIONS.has('contains' as never), false);

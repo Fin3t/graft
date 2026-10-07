@@ -19,6 +19,7 @@ import { languageOf, type FileFacts, type RawEdge } from "./extract.js";
 import { genericLangOf } from "./generic.js";
 import { resolveCSharp } from "./csharp-resolve.js";
 import type { CsFacts } from "./csharp.js";
+import { resolveUnity, type UnityResolveOptions } from "./unity-resolve.js";
 
 const IMPORT_EXTS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".py"];
 /** C/C++ source + header extensions, for resolving `#include` targets. */
@@ -100,6 +101,8 @@ export interface ResolveOptions {
   goModules?: GoModule[];
   /** Per-file facts from extractors that resolve with a global model (C#, Unity). */
   facts?: Map<string, FileFacts>;
+  /** Project-level inputs for the Unity layer (package GUIDs, -executeMethod targets). */
+  unity?: UnityResolveOptions;
 }
 
 export function resolveEdges(
@@ -209,14 +212,21 @@ export function resolveEdges(
   // repo; their intents carry an expression instead of a bare name.
   const csFacts = new Map<string, CsFacts>();
   for (const [file, f] of opts.facts ?? []) if (f.cs) csFacts.set(file, f.cs);
-  if (csFacts.size) {
-    const cs = resolveCSharp(nodes, rawEdges, csFacts);
-    for (const e of cs.edges) {
+  const merge = (edges: EdgeV1[]) => {
+    for (const e of edges) {
       const key = `${e.source}\0${e.relation}\0${e.target}`;
       if (seen.has(key)) continue;
       seen.add(key);
       out.push(e);
     }
+  };
+  const cs = csFacts.size ? resolveCSharp(nodes, rawEdges, csFacts) : null;
+  if (cs) merge(cs.edges);
+  // Unity assets: GUIDs, scripts, UnityEvents, strings in code. May mint nodes
+  // (binary assets, package assets) into `nodes` and stamp engine entry points.
+  if ([...(opts.facts?.values() ?? [])].some((f) => f.unity)) {
+    // the C# edges are visible to it (overrides of engine virtuals mark entries)
+    merge(resolveUnity(nodes, rawEdges, opts.facts!, cs?.model ?? null, opts.unity ?? {}, out));
   }
 
   for (const e of rawEdges) {
@@ -225,6 +235,8 @@ export function resolveEdges(
       add(e.source, e.targetId, "contains", "extracted");
     } else if (e.targetId && csFacts.has(e.file)) {
       continue; // resolved by the C# pass
+    } else if (e.targetId) {
+      add(e.source, e.targetId, e.relation, "extracted"); // a file-local edge an extractor settled itself
     } else if (e.relation === "imports" && e.specifier) {
       const target =
         hasGoModules && e.file.endsWith(".go")

@@ -60,6 +60,12 @@ export function resolveSymbol(graph: GraphV1, query: string, opts: ResolveSymbol
 
   let matches = symbolMatches(graph.nodes, lowerQuery);
 
+  // An exact file name (`Walker.prefab`, `FloorFX.hlsl`) means that file — before the
+  // last-segment fallback below turns it into "every symbol named `prefab`".
+  if (matches.length === 0 && looksLikeFilename) {
+    matches = graph.nodes.filter((n) => n.kind === "file" && n.name.toLowerCase() === lowerQuery);
+  }
+
   if (matches.length === 0 && query.includes(".")) {
     const lastSegment = query.slice(query.lastIndexOf(".") + 1).toLowerCase();
     if (lastSegment) {
@@ -77,12 +83,29 @@ export function resolveSymbol(graph: GraphV1, query: string, opts: ResolveSymbol
     );
   }
 
+  // Assets are named the way their tool names them, not by a symbol: a prefab by
+  // its file stem (`Held_AssaultRifle`), a shader by its ShaderLab name
+  // (`Hordefall/EnemyRim`, `Universal Render Pipeline/Unlit`), a shader graph by
+  // the tail of its menu path (`glTF-pbrMetallicRoughness`).
+  if (matches.length === 0) matches = assetMatches(graph.nodes, query);
+
   if (opts.in) {
     const prefix = normalizePathPrefix(opts.in);
     assertPrefixIndexed(graph, prefix);
     matches = matches.filter((n) => pathUnderPrefix(n.path, prefix));
   }
   return matches;
+}
+
+function assetMatches(nodes: NodeV1[], query: string): NodeV1[] {
+  const q = query.toLowerCase();
+  const quoted = `"${q}"`;
+  const stem = (p: string) => p.slice(p.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "").toLowerCase();
+  let hits = nodes.filter(
+    (n) => (n.kind === "file" || n.kind === "asset") && (stem(n.path) === q || (n.signature ?? "").toLowerCase().includes(quoted)),
+  );
+  if (hits.length === 0) hits = nodes.filter((n) => n.kind === "asset" && n.name.toLowerCase().endsWith(`/${q}`));
+  return hits;
 }
 
 /** Strips extract.ts's mint-time disambiguation ordinals (`~2`, `~3`, ...)
@@ -119,15 +142,39 @@ export interface EdgeHit {
   id: string;
   relation: Relation;
   depth: number;
+  /** What carries the edge (a serialized field, an event, the string that named
+   * the target) — see EdgeV1.via. Depth-1 hits only. */
+  via?: string;
+}
+
+/** A Unity asset file (scene, prefab, controller, …) is one unit: its components,
+ * states and parameters are the file's own content, so a depth-1 walk on the file
+ * covers them too. Code files keep their file-level meaning (imports). */
+const UNITY_ASSET_FILE = /\.(unity|prefab|asset|mat|controller|overridecontroller|anim|inputactions|asmdef|shader|shadergraph|shadersubgraph)$/i;
+
+function unitIds(graph: GraphV1, symbol: NodeV1): Set<string> {
+  const ids = new Set([symbol.id]);
+  if (symbol.kind === "file" && UNITY_ASSET_FILE.test(symbol.path)) {
+    for (const n of graph.nodes) if (n.path === symbol.path) ids.add(n.id);
+  }
+  return ids;
 }
 
 /** Depth-1: nodes with a walk-relation edge whose target is `symbol`. */
 export function callersOf(graph: GraphV1, symbol: NodeV1): EdgeHit[] {
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  const ids = unitIds(graph, symbol);
+  const dedupe = new Set<string>();
   const hits: EdgeHit[] = [];
   for (const e of graph.edges as EdgeV1[]) {
-    if (!WALK_RELATIONS.has(e.relation) || e.target !== symbol.id) continue;
-    hits.push({ node: byId.get(e.source) ?? null, id: e.source, relation: e.relation, depth: 1 });
+    if (!WALK_RELATIONS.has(e.relation) || !ids.has(e.target) || ids.has(e.source)) continue;
+    if (ids.size > 1) {
+      // a file and its own components can carry the same edge — report it once
+      const key = `${e.source}\0${e.relation}`;
+      if (dedupe.has(key)) continue;
+      dedupe.add(key);
+    }
+    hits.push({ node: byId.get(e.source) ?? null, id: e.source, relation: e.relation, depth: 1, ...(e.via ? { via: e.via } : {}) });
   }
   return hits;
 }
@@ -135,10 +182,18 @@ export function callersOf(graph: GraphV1, symbol: NodeV1): EdgeHit[] {
 /** Depth-1: walk-relation edges whose source is `symbol`. */
 export function calleesOf(graph: GraphV1, symbol: NodeV1): EdgeHit[] {
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  const ids = unitIds(graph, symbol);
+  const dedupe = new Set<string>();
   const hits: EdgeHit[] = [];
   for (const e of graph.edges as EdgeV1[]) {
-    if (!WALK_RELATIONS.has(e.relation) || e.source !== symbol.id) continue;
-    hits.push({ node: byId.get(e.target) ?? null, id: e.target, relation: e.relation, depth: 1 });
+    if (!WALK_RELATIONS.has(e.relation) || !ids.has(e.source) || ids.has(e.target)) continue;
+    if (ids.size > 1) {
+      // a file and its own components can carry the same edge — report it once
+      const key = `${e.target}\0${e.relation}`;
+      if (dedupe.has(key)) continue;
+      dedupe.add(key);
+    }
+    hits.push({ node: byId.get(e.target) ?? null, id: e.target, relation: e.relation, depth: 1, ...(e.via ? { via: e.via } : {}) });
   }
   return hits;
 }

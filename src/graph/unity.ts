@@ -150,12 +150,6 @@ export function unityKindOf(path: string): string | null {
   return YAML_KINDS[ext] ?? OTHER_KINDS[ext] ?? null;
 }
 
-/** Unity YAML assets may be large (scenes); graft's generic 1 MB cap does not apply. */
-export const UNITY_MAX_FILE_BYTES = 64_000_000;
-export function isLargeUnityYaml(path: string): boolean {
-  return !!YAML_KINDS[extname(path).toLowerCase()];
-}
-
 /** Display label for the build banner. */
 export function unityLabelOf(path: string): string | null {
   const k = unityKindOf(path);
@@ -344,7 +338,7 @@ function extractSceneOrPrefab(rel: string, source: string, o: Out, kind: "scene"
   const docs = scanUnityYaml(source);
   const byId = new Map(docs.map((d) => [d.fileId, d]));
   const gos = docs.filter((d) => d.classId === GAMEOBJECT);
-  const components = new Map<string, UDoc[]>(); // go fileId → components
+  const components = new Map<string, UDoc[]>(); // GameObject fileId → its components
   for (const d of docs) {
     const go = parseRef(d.props.m_GameObject)?.fid;
     if (go && go !== "0") {
@@ -354,25 +348,30 @@ function extractSceneOrPrefab(rel: string, source: string, o: Out, kind: "scene"
     }
   }
   const transformOf = (go: string) => components.get(go)?.find((c) => TRANSFORM.has(c.classId));
-  // prefab instances: name + parent transform
+  const fatherOf = (go: string) => parseRef(transformOf(go)?.props.m_Father)?.fid;
   const instances = docs.filter((d) => d.classId === PREFAB_INSTANCE);
   const instanceName = (pi: UDoc): string => {
     for (const it of itemsOf(pi, "m_Modifications")) if (it.v.propertyPath === "m_Name" && it.v.value) return it.v.value;
     return "(prefab instance)";
   };
-  const instanceParent = (pi: UDoc): string | undefined => pi.refs.find((r) => r.path.endsWith("m_TransformParent"))?.fid;
+  const instanceParent = (pi: UDoc): string | undefined => {
+    const f = pi.refs.find((r) => r.path.endsWith("m_TransformParent"))?.fid;
+    return f && f !== "0" ? f : undefined;
+  };
 
-  // GameObject paths (memoised, cycle-safe)
+  // Hierarchy paths ("Canvas/Panel/Play"), through nested prefab instances.
   const pathMemo = new Map<string, string>();
+  const instancePath = (pi: UDoc, depth: number): string => {
+    const parent = transformPath(instanceParent(pi), depth + 1);
+    return parent ? `${parent}/${instanceName(pi)}` : instanceName(pi);
+  };
   const transformPath = (tf: string | undefined, depth = 0): string => {
     if (!tf || tf === "0" || depth > 64) return "";
     const t = byId.get(tf);
     if (!t) return "";
     if (t.stripped) {
       const pi = byId.get(parseRef(t.props.m_PrefabInstance)?.fid ?? "");
-      if (!pi) return "";
-      const parent = transformPath(instanceParent(pi), depth + 1);
-      return parent ? `${parent}/${instanceName(pi)}` : instanceName(pi);
+      return pi ? instancePath(pi, depth) : "";
     }
     const go = parseRef(t.props.m_GameObject)?.fid;
     return go ? goPath(go, depth + 1) : "";
@@ -380,111 +379,91 @@ function extractSceneOrPrefab(rel: string, source: string, o: Out, kind: "scene"
   const goPath = (go: string, depth = 0): string => {
     const memo = pathMemo.get(go);
     if (memo !== undefined) return memo;
+    pathMemo.set(go, "");
     const g = byId.get(go);
     let p = "";
     if (g?.stripped) {
       const pi = byId.get(parseRef(g.props.m_PrefabInstance)?.fid ?? "");
-      if (pi) {
-        const parent = transformPath(instanceParent(pi), depth + 1);
-        p = parent ? `${parent}/${instanceName(pi)}` : instanceName(pi);
-      }
+      if (pi) p = instancePath(pi, depth);
     } else if (g) {
-      const tf = transformOf(go);
-      const father = parseRef(tf?.props.m_Father)?.fid;
-      const parent = transformPath(father, depth + 1);
+      const parent = transformPath(fatherOf(go), depth + 1);
       const name = g.name ?? "(unnamed)";
       p = parent ? `${parent}/${name}` : name;
     }
     pathMemo.set(go, p);
     return p;
   };
-
-  // Which GameObjects get a node: any with a MonoBehaviour/Animator, any a
-  // MonoBehaviour field points at, and a prefab's root.
-  const referenced = new Set<string>();
   const goOf = (fid: string): string | undefined => {
     const d = byId.get(fid);
     if (!d) return undefined;
     if (d.classId === GAMEOBJECT) return d.fileId;
     return parseRef(d.props.m_GameObject)?.fid;
   };
-  for (const d of docs) {
-    if (d.classId !== MONOBEHAVIOUR) continue;
-    for (const r of d.refs) if (!r.guid && r.fid !== "0") {
-      const g = goOf(r.fid);
-      if (g) referenced.add(g);
-    }
-  }
-  const roots = gos.filter((g) => !g.stripped && !parseRef(transformOf(g.fileId)?.props.m_Father)?.fid || parseRef(transformOf(g.fileId)?.props.m_Father)?.fid === "0");
-  const prefabRoot = kind === "prefab" ? roots.find((g) => !g.stripped) : undefined;
-  const interesting = (g: UDoc) =>
-    referenced.has(g.fileId) ||
-    g === prefabRoot ||
-    (components.get(g.fileId) ?? []).some((c) => c.classId === MONOBEHAVIOUR || c.classId === ANIMATOR || c.classId === 111);
 
-  // variant: a prefab whose root is itself a prefab instance with no parent
+  const prefabRoot = kind === "prefab" ? gos.find((g) => !g.stripped && (!fatherOf(g.fileId) || fatherOf(g.fileId) === "0")) : undefined;
+  // A variant: a prefab whose root is itself a prefab instance with no parent.
   let variantBase: string | undefined;
   if (kind === "prefab" && !prefabRoot) {
-    const rootPi = instances.find((pi) => !instanceParent(pi) || instanceParent(pi) === "0");
+    const rootPi = instances.find((pi) => !instanceParent(pi));
     variantBase = parseRef(rootPi?.props.m_SourcePrefab)?.guid;
   }
 
+  // One node per script/Animator component: its own document is the exact span a
+  // reference or a UnityEvent sits in. Plain components (renderers, colliders) get
+  // no node; their references hang off the file.
   const objects: Record<string, string> = {};
-  const goNode = new Map<string, string>();
+  const compNode = new Map<string, string>(); // component fileId → node id
+  const goFirstNode = new Map<string, string>(); // GameObject fileId → first component node id
   const animators: AnimatorFact[] = [];
   const playerInputs: PlayerInputFact[] = [];
   const fileBody: string[] = [];
-  const nodesFor: Array<{ go: UDoc; id: string }> = [];
-
-  for (const g of gos) {
-    const path = goPath(g.fileId);
-    fileBody.push(path);
-    if (g.stripped || !interesting(g)) continue;
-    const comps = components.get(g.fileId) ?? [];
-    const labels = comps.map((c) => (c.classId === MONOBEHAVIOUR ? (classIdentifier(c)?.split(".").pop() ?? "MonoBehaviour") : c.type)).filter(Boolean);
-    const end = Math.max(g.end, ...comps.map((c) => (c.start - g.end < 400 && c.start > g.start ? c.end : g.end)));
+  const shortOf = (d: UDoc): string => (d.classId === MONOBEHAVIOUR ? (classIdentifier(d)?.split(".").pop() ?? "MonoBehaviour") : d.type);
+  for (const g of gos) if (!g.stripped) fileBody.push(goPath(g.fileId));
+  for (const d of docs) {
+    if (d.stripped || (d.classId !== MONOBEHAVIOUR && d.classId !== ANIMATOR)) continue;
+    const go = parseRef(d.props.m_GameObject)?.fid;
+    if (!go) continue;
+    const path = goPath(go) || "(unnamed)";
+    const short = shortOf(d);
+    const goName = path.split("/").pop() ?? path;
     const fields: string[] = [];
-    for (const c of comps) if (c.classId === MONOBEHAVIOUR) for (const [k, v] of Object.entries(c.props)) if (!STD_KEYS.has(k) && !v.startsWith("{fileID")) fields.push(`${k}=${v}`);
+    for (const [k, v] of Object.entries(d.props)) if (!STD_KEYS.has(k) && !v.startsWith("{fileID")) fields.push(`${k}=${v}`);
+    const cls = d.classId === MONOBEHAVIOUR ? classIdentifier(d) : undefined;
     const id = addNode(
       o,
-      path || g.name || g.fileId,
-      g.name ?? "(unnamed)",
-      "gameobject",
-      g.start,
-      end,
-      `GameObject "${path}" [${labels.join(", ")}]`,
-      `${path} ${labels.join(" ")} ${comps.map(classIdentifier).filter(Boolean).join(" ")} ${fields.join(" ")}`,
+      `${path}:${short}`,
+      goName,
+      "component",
+      d.start,
+      d.end,
+      `${short} on "${path}"`,
+      `${path} ${short} ${cls ?? ""} ${fields.join(" ")}`,
     );
-    goNode.set(g.fileId, id);
-    nodesFor.push({ go: g, id });
-    objects[g.fileId] = id;
-    for (const c of comps) objects[c.fileId] = id;
-  }
-
-  const sourceFor = (goFid: string | undefined): string => (goFid ? (goNode.get(goFid) ?? rel) : rel);
-  const localTarget = (fid: string): string | undefined => {
-    const g = goOf(fid);
-    if (g && goNode.has(g)) return goNode.get(g);
-    const d = byId.get(fid);
-    if (d?.stripped) {
-      const pi = parseRef(d.props.m_PrefabInstance)?.fid;
-      if (pi) return undefined;
+    compNode.set(d.fileId, id);
+    objects[d.fileId] = id;
+    if (!goFirstNode.has(go)) {
+      goFirstNode.set(go, id);
+      objects[go] = id;
     }
-    return undefined;
-  };
+  }
+  // other components of a GameObject with a node resolve to that node
+  for (const [go, comps] of components) {
+    const n = goFirstNode.get(go);
+    if (n) for (const c of comps) objects[c.fileId] ??= n;
+  }
+  const nodeFor = (fid: string): string | undefined => compNode.get(fid) ?? (goOf(fid) ? goFirstNode.get(goOf(fid)!) : undefined);
 
-  // components: scripts, serialized references, UnityEvents
+  const callRefs = new Set<number>();
   for (const d of docs) {
     if (d.classId === GAMEOBJECT || TRANSFORM.has(d.classId) || d.classId === PREFAB_INSTANCE || d.stripped) continue;
     const goFid = parseRef(d.props.m_GameObject)?.fid;
-    const src = sourceFor(goFid);
+    const src = compNode.get(d.fileId) ?? rel;
     const path = goFid ? goPath(goFid) : "";
-    const compName = d.classId === MONOBEHAVIOUR ? (classIdentifier(d)?.split(".").pop() ?? "MonoBehaviour") : d.type;
+    const short = shortOf(d);
     if (d.classId === MONOBEHAVIOUR) {
       const script = parseRef(d.props.m_Script);
       const cls = classIdentifier(d);
       if (script?.guid || cls) intent(o, src, "attaches", { k: "script", guid: script?.guid, fid: script?.fid, ...(cls ? { cls } : {}) });
-      // PlayerInput (Input System): actions asset + notification behaviour
       if (d.props.m_NotificationBehavior !== undefined) {
         const actions = d.refs.find((r) => r.path === "m_Actions");
         playerInputs.push({
@@ -500,9 +479,9 @@ function extractSceneOrPrefab(rel: string, source: string, o: Out, kind: "scene"
       animators.push({ go: src, controller: ctrl?.guid ? { guid: ctrl.guid, fid: ctrl.fid } : undefined, scripts: [] });
     }
     // UnityEvent persistent calls
-    const calls = itemsOf(d, "m_Calls");
-    const callItems = new Set(calls.map((c) => c.id));
-    for (const c of calls) {
+    callRefs.clear();
+    for (const c of itemsOf(d, "m_Calls")) {
+      callRefs.add(c.id);
       const method = c.v.m_MethodName;
       if (!method) continue;
       const event = c.list.split(".")[0];
@@ -510,57 +489,56 @@ function extractSceneOrPrefab(rel: string, source: string, o: Out, kind: "scene"
       const tdoc = target?.fid ? byId.get(target.fid) : undefined;
       const tscript = tdoc?.classId === MONOBEHAVIOUR ? parseRef(tdoc.props.m_Script)?.guid : undefined;
       const type = c.v.m_TargetAssemblyTypeName?.split(",")[0]?.trim();
-      intent(o, src, "invokes", { k: "call", method, via: `${compName}.${event}`, ...(type ? { type } : {}), ...(tscript ? { script: tscript } : {}) });
+      intent(o, src, "invokes", { k: "call", method, via: `${path ? `${path}.` : ""}${short}.${event}`, ...(type ? { type } : {}), ...(tscript ? { script: tscript } : {}) });
     }
     // serialized references
     for (const r of d.refs) {
-      if (callItems.has(r.item)) continue; // UnityEvent targets are handled above
-      if (r.path.startsWith("m_Script")) continue;
-      const via = `${compName}.${r.path}`;
-      if (r.guid) {
-        if (r.guid === "0000000000000000e000000000000000" || r.guid === "0000000000000000f000000000000000") continue; // built-in resources
-        intent(o, src, "assigns", { k: "asset", guid: r.guid, fid: r.fid, via: path ? `${path}.${via}` : via });
-      } else {
-        const t = localTarget(r.fid);
-        if (t && t !== src) {
-          o.edges.push({ source: src, relation: "assigns", file: rel, targetId: t, unity: { k: "asset", guid: "", via } });
-        }
+      if (callRefs.has(r.item)) continue; // UnityEvent targets are handled above
+      if (r.guid === "0000000000000000e000000000000000" || r.guid === "0000000000000000f000000000000000") continue; // built-in resources
+      const via = src === rel && path ? `${path}.${short}.${r.path}` : `${short}.${r.path}`;
+      if (r.guid) intent(o, src, "assigns", { k: "asset", guid: r.guid, fid: r.fid, via });
+      else {
+        const t = nodeFor(r.fid);
+        if (t && t !== src) o.edges.push({ source: src, relation: "assigns", file: rel, targetId: t, unity: { k: "asset", guid: "", via } });
       }
     }
   }
-  for (const a of animators) a.scripts = [];
-  // scripts per GameObject node, for animation events and PlayerInput messages
+  // scripts per node, for animation events and PlayerInput messages
   const scriptsOn = new Map<string, string[]>();
   for (const d of docs) {
     if (d.classId !== MONOBEHAVIOUR) continue;
-    const src = sourceFor(parseRef(d.props.m_GameObject)?.fid);
+    const go = parseRef(d.props.m_GameObject)?.fid;
     const g = parseRef(d.props.m_Script)?.guid;
-    if (g) scriptsOn.set(src, [...(scriptsOn.get(src) ?? []), g]);
+    if (!go || !g) continue;
+    for (const c of components.get(go) ?? []) {
+      const n = compNode.get(c.fileId);
+      if (n) scriptsOn.set(n, [...(scriptsOn.get(n) ?? []), g]);
+    }
   }
   for (const a of animators) a.scripts = scriptsOn.get(a.go) ?? [];
   for (const p of playerInputs) p.scripts = scriptsOn.get(p.go) ?? [];
 
-  // tags and layers of GameObjects with nodes
-  for (const { go, id } of nodesFor) {
-    const tag = go.props.m_TagString;
-    if (tag && tag !== "Untagged") intent(o, id, "references", { k: "tag", name: tag });
-    const layer = Number(go.props.m_Layer);
-    if (layer > 0) intent(o, id, "references", { k: "layer", index: layer });
+  // tags and layers of GameObjects (the file carries them; via names the object)
+  for (const g of gos) {
+    if (g.stripped) continue;
+    const tag = g.props.m_TagString;
+    const src = goFirstNode.get(g.fileId) ?? rel;
+    if (tag && tag !== "Untagged") intent(o, src, "references", { k: "tag", name: tag });
+    const layer = Number(g.props.m_Layer);
+    if (layer > 0) intent(o, src, "references", { k: "layer", index: layer });
   }
 
-  // nested prefab instances (and their overrides)
+  // nested prefab instances (and their reference overrides)
   for (const pi of instances) {
     const src = parseRef(pi.props.m_SourcePrefab);
     const parentTf = instanceParent(pi);
-    const parentPath = transformPath(parentTf);
-    const name = instanceName(pi);
-    const ipath = parentPath ? `${parentPath}/${name}` : name;
+    const ipath = instancePath(pi, 0);
     fileBody.push(ipath);
     const parentGo = parentTf ? goOf(parentTf) : undefined;
-    const owner = parentGo && goNode.has(parentGo) ? goNode.get(parentGo)! : rel;
-    if (src?.guid && !(variantBase && src.guid === variantBase && (!parentTf || parentTf === "0"))) {
-      intent(o, owner === rel ? rel : owner, "nests", { k: "prefab", guid: src.guid, via: ipath });
-      if (owner !== rel) intent(o, rel, "nests", { k: "prefab", guid: src.guid, via: ipath });
+    const owner = parentGo ? (goFirstNode.get(parentGo) ?? rel) : rel;
+    if (src?.guid && !(variantBase && src.guid === variantBase && !parentTf)) {
+      intent(o, rel, "nests", { k: "prefab", guid: src.guid, via: ipath });
+      if (owner !== rel) intent(o, owner, "nests", { k: "prefab", guid: src.guid, via: ipath });
     }
     for (const it of itemsOf(pi, "m_Modifications")) {
       const ref = parseRef(it.v.objectReference);
@@ -568,7 +546,7 @@ function extractSceneOrPrefab(rel: string, source: string, o: Out, kind: "scene"
       const via = `${ipath}.${it.v.propertyPath ?? "?"}`;
       if (ref.guid) intent(o, rel, "assigns", { k: "asset", guid: ref.guid, fid: ref.fid, via });
       else {
-        const t = localTarget(ref.fid);
+        const t = nodeFor(ref.fid);
         if (t) o.edges.push({ source: rel, relation: "assigns", file: rel, targetId: t, unity: { k: "asset", guid: "", via } });
       }
     }
@@ -585,7 +563,7 @@ function extractSceneOrPrefab(rel: string, source: string, o: Out, kind: "scene"
   const asset: NonNullable<UnityFacts["asset"]> = { kind };
   if (kind === "prefab") {
     asset.objects = objects;
-    if (prefabRoot && goNode.has(prefabRoot.fileId)) asset.root = goNode.get(prefabRoot.fileId);
+    if (prefabRoot && goFirstNode.has(prefabRoot.fileId)) asset.root = goFirstNode.get(prefabRoot.fileId);
   }
   if (animators.length) asset.animators = animators;
   if (playerInputs.length) asset.playerInputs = playerInputs;
@@ -762,7 +740,9 @@ function extractController(rel: string, source: string, o: Out): UnityFacts {
     }
   }
   const fnode = o.nodes[0];
-  fnode.signature = `AnimatorController "${name}" (${stateNames.length} states, ${params.length} parameters)`;
+  // States and parameters in the signature: it is what `ask` shows next to the path.
+  const list = (xs: string[], max: number) => (xs.join(", ").length > max ? `${xs.join(", ").slice(0, max)}…` : xs.join(", "));
+  fnode.signature = `AnimatorController "${name}" states: ${list(stateNames, 300)}; parameters: ${list(params.map((p) => `${p.name} (${p.type})`), 200)}`;
   fnode.body_text = body(`${fnode.signature} states ${stateNames.join(" ")} parameters ${params.map((p) => `${p.name}:${p.type}`).join(" ")} layers ${layers.map((l) => l.name).join(" ")}`, 16000);
   return { asset: { kind: "controller", motions } };
 }
