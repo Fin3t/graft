@@ -275,7 +275,7 @@ test("the skill speaks trail in a repo with .trail/, keeps graft/ paths, and tea
   const trail = skillTemplate("trail");
   assert.equal(skillTemplate(), graft, "graft is the default, unchanged");
   assert.doesNotMatch(graft, /\.trail\//);
-  assert.match(trail, /^name: graft$/m, "the name still matches its folder");
+  assert.match(trail, /^name: trail$/m, "it lives in .claude/skills/trail/");
   assert.match(trail, /`trail ask "<question>" --source`/);
   assert.match(trail, /`trail build` \/ `trail build --check`/);
   assert.match(trail, /`graft\/` holds a graph/, "the code map folder is still graft/");
@@ -300,4 +300,42 @@ test("hooks speak trail only in a repo that uses it, on a machine with trail ins
   assert.equal(adoptRepoBrand(withTrail, { PATH: "" }), "graft", "trail not installed: don't suggest it");
   assert.equal(adoptRepoBrand(plain, { PATH: bin }), "graft");
   assert.equal(adoptRepoBrand(plain, { PATH: bin, TRAIL_INVOKED_AS: "trail" }), "trail", "a name already set is kept");
+});
+
+// --- wiring under trail's names ---
+
+test("trail init moves a graft-wired repo to trail's names, and uninstall takes either set out", () => {
+  const home = mkdtempSync(join(tmpdir(), "notes-home-"));
+  const d = repoWithCode();
+  const env = { GRAFT_MCP_NPX: "1" };
+  Object.assign(process.env, env);
+  try {
+    assert.equal(run("graft", ["init", d, "--agents", "claude", "--yes", "--no-global"], home).status, 0);
+    assert.ok(existsSync(join(d, ".claude", "helpers", "graft-hooks.cjs")));
+    assert.ok(existsSync(join(d, ".claude", "skills", "graft", "SKILL.md")));
+
+    const t = run("trail", ["init", d, "--agents", "claude", "--yes", "--no-global"], home);
+    assert.equal(t.status, 0, t.err);
+    for (const f of ["helpers/trail-hooks.cjs", "helpers/trail-statusline.cjs", "skills/trail/SKILL.md"]) assert.ok(existsSync(join(d, ".claude", f)), f);
+    for (const f of ["helpers/graft-hooks.cjs", "helpers/graft-statusline.cjs", "skills/graft"]) assert.equal(existsSync(join(d, ".claude", f)), false, f);
+    const settings = readFileSync(join(d, ".claude", "settings.json"), "utf8");
+    assert.match(settings, /trail-hooks\.cjs\\" session-start/);
+    assert.doesNotMatch(settings, /graft-hooks\.cjs/);
+    assert.match(settings, /trail-statusline\.cjs/);
+    const mcp = JSON.parse(readFileSync(join(d, ".mcp.json"), "utf8"));
+    assert.deepEqual(Object.keys(mcp.mcpServers), ["trail"]);
+    assert.deepEqual(mcp.mcpServers.trail, { command: "npx", args: ["-y", "@trailhq/trail", "mcp"] });
+
+    // Running it again changes nothing.
+    const again = run("trail", ["init", d, "--agents", "claude", "--yes", "--no-global"], home);
+    assert.equal(again.status, 0, again.err);
+    assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(d, ".mcp.json"), "utf8")).mcpServers), ["trail"]);
+
+    const un = run("trail", ["uninstall", d, "-y", "--no-global"], home);
+    assert.equal(un.status, 0, un.err);
+    for (const f of ["helpers/trail-hooks.cjs", "skills/trail/SKILL.md"]) assert.equal(existsSync(join(d, ".claude", f)), false, f);
+    assert.equal(existsSync(join(d, ".mcp.json")), false);
+  } finally {
+    delete process.env.GRAFT_MCP_NPX;
+  }
 });

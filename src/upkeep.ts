@@ -265,7 +265,7 @@ export function writeStamp(
  */
 export function wiredHostIds(repo: string): string[] {
   const ids: string[] = [];
-  if (existsSync(join(repo, '.claude', 'helpers', 'graft-hooks.cjs'))) ids.push('claude');
+  if (['graft', 'trail'].some((n) => existsSync(join(repo, '.claude', 'helpers', `${n}-hooks.cjs`)))) ids.push('claude');
   for (const host of HOSTS) {
     const path = join(repo, host.relPath);
     if (!existsSync(path)) continue;

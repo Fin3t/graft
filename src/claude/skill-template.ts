@@ -21,10 +21,7 @@ function trailSkill(graft: string): string {
   const text = graft
     .replace("### 6 · Lifecycle: \`graft build\` / \`graft check\`", "### 6 · Lifecycle: \`trail build\` / \`trail build --check\`")
     .replace("\`check\` fails when \`graft/\` is stale, for CI.", "\`build --check\` fails when \`graft/\` is stale, for CI.")
-    .replace(/\bgraft\b(?![/\w-])/g, "trail")
-    // A skill's name matches its folder, and this one still lives in
-    // .claude/skills/graft/ until the wiring moves to trail names.
-    .replace(/^name: trail$/m, "name: graft");
+    .replace(/\bgraft\b(?![/\w-])/g, "trail");
   return `${text.trimEnd()}
 
 ## Team notes in .trail/

@@ -91,7 +91,7 @@ function hookTimeoutIn(file: string, event: string): number | null {
     if (!Array.isArray(blocks)) return null;
     for (const block of blocks) {
       for (const h of block?.hooks ?? []) {
-        if (typeof h?.command === 'string' && h.command.includes('graft-hooks.cjs') && typeof h.timeout === 'number') {
+        if (typeof h?.command === 'string' && /(graft|trail)-hooks\.cjs/.test(h.command) && typeof h.timeout === 'number') {
           return h.timeout;
         }
       }
